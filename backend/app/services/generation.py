@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from fastapi import UploadFile, HTTPException
 from loguru import logger
 from app.services.parser import parse_uploaded_file
-from app.services.ai_client import analyze_requirements, design_test_strategy, generate_test_cases
+from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases
 from app.services.exporter import convert_cases_to_mindmap, export_cases_to_excel
 
 async def process_generation_request(source_type: str, doc_url: Optional[str], file: Optional[UploadFile]) -> Dict[str, Any]:
