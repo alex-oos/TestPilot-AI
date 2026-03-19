@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from loguru import logger
 from typing import List, Dict, Any
@@ -109,3 +110,73 @@ JSON 中的每一个对象代表一个测试用例，必须严格符合以下字
     logger.success(f"Generated {len(cases)} test cases.")
     return cases
 
+
+async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[str, Any]:
+    """AI Module - Review and optimize generated test cases"""
+    logger.info("AI Module: Reviewing test cases via LLM")
+    
+    cases_summary = json.dumps(cases, ensure_ascii=False, indent=2)
+    
+    system_prompt = """
+你是一个资深的软件质量保证（QA）专家。
+请对已生成的测试用例进行评审，找出不足之处并提出优化建议。
+
+【关键要求】：
+你必须直接返回一个合法的 JSON 对象，不要包裹在 markdown 代码块中，不要有任何前言或后语。
+JSON 必须严格符合以下结构：
+{
+  "issues": ["问题描述1", "问题描述2"],
+  "suggestions": ["优化建议1", "优化建议2"],
+  "missing_scenarios": [
+    {
+      "module": "模块名",
+      "scenario": "缺失场景描述",
+      "test_point": "具体测试点"
+    }
+  ],
+  "quality_score": 85,
+  "summary": "整体评审总结"
+}
+- issues: 发现的问题列表（如：缺少并发测试、未覆盖边界值等）
+- suggestions: 优化建议列表
+- missing_scenarios: 建议补充的测试场景列表
+- quality_score: 用例质量评分（0-100）
+- summary: 整体评审总结（中文，100字以内）
+"""
+    
+    user_content = f"""【需求分析结果】：
+{analysis}
+
+【已生成的测试用例（共{len(cases)}条）】：
+{cases_summary}"""
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+    
+    review_str = await llm_client.chat(messages=messages, temperature=0.3)
+    
+    # Clean up potential markdown wrapping
+    review_str = review_str.strip()
+    review_str = re.sub(r'^```json\s*', '', review_str)
+    review_str = re.sub(r'^```\s*', '', review_str)
+    review_str = re.sub(r'\s*```$', '', review_str)
+    review_str = review_str.strip()
+    
+    try:
+        review = json.loads(review_str)
+        if not isinstance(review, dict):
+            raise ValueError("LLM did not return a dict")
+    except Exception as e:
+        logger.error(f"Failed to parse review JSON from LLM: {str(e)}\nRaw: {review_str}")
+        review = {
+            "issues": ["AI评审解析失败，请检查LLM输出格式"],
+            "suggestions": ["建议手动检查生成的测试用例完整性"],
+            "missing_scenarios": [],
+            "quality_score": 0,
+            "summary": "AI评审模块返回内容格式有误，已降级处理。"
+        }
+    
+    logger.success(f"Test case review completed. Quality score: {review.get('quality_score', 'N/A')}")
+    return review

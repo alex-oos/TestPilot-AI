@@ -3,9 +3,14 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 const routes: Array<RouteRecordRaw> = [
   {
     path: '/',
-    redirect: '/dashboard',
+    redirect: '/tasks',
     component: () => import('../layout/AdminLayout.vue'),
     children: [
+      {
+        path: 'tasks',
+        name: 'TaskList',
+        component: () => import('../views/TaskList.vue')
+      },
       {
         path: 'dashboard',
         name: 'Dashboard',
@@ -15,6 +20,11 @@ const routes: Array<RouteRecordRaw> = [
         path: 'generate',
         name: 'Generate',
         component: () => import('../views/Generate.vue')
+      },
+      {
+        path: 'task/:id',
+        name: 'TaskDetail',
+        component: () => import('../views/TaskDetail.vue')
       }
     ]
   },

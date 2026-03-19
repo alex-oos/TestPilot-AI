@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.logger import setup_logger, logger
+from app.core import database
 
 # Initialize logger
 setup_logger()
@@ -28,6 +29,7 @@ app.include_router(api_router, prefix="/api")
 
 @app.on_event("startup")
 async def startup_event():
+    database.init_db()
     logger.info("Application started up successfully.")
 
 @app.on_event("shutdown")

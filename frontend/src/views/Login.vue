@@ -93,7 +93,7 @@ const handleLogin = async () => {
   
   loading.value = true
   try {
-    const response = await axios.post('http://127.0.0.1:8000/api/login', {
+    const response = await axios.post('/api/login', {
       username: loginForm.username,
       password: loginForm.password
     })
@@ -101,7 +101,7 @@ const handleLogin = async () => {
     if (response.data.token) {
       localStorage.setItem('token', response.data.token)
       ElMessage.success('登录成功！')
-      router.push('/dashboard')
+      router.push('/tasks')
     }
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '登录失败')

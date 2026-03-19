@@ -30,7 +30,16 @@
           :class="route.path === '/generate' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20 font-medium' : 'hover:bg-slate-800 hover:text-white'"
         >
           <span class="i-mdi-robot-outline text-xl opacity-80">🤖</span>
-          <span>用例生成器</span>
+          <span>用例生成</span>
+        </router-link>
+
+        <router-link 
+          to="/tasks" 
+          class="flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200"
+          :class="(route.path === '/tasks' || route.path.startsWith('/task/')) ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20 font-medium' : 'hover:bg-slate-800 hover:text-white'"
+        >
+          <span class="i-mdi-format-list-bulleted text-xl opacity-80 decoration-slate-400">📋</span>
+          <span>任务列表</span>
         </router-link>
       </nav>
 
@@ -84,9 +93,11 @@ const router = useRouter()
 const route = useRoute()
 
 const pageTitle = computed(() => {
-  switch (route.path) {
-    case '/dashboard': return '数据看板'
-    case '/generate': return '智能用例生成'
+  switch (true) {
+    case route.path === '/tasks': return '任务列表'
+    case route.path === '/dashboard': return '数据看板'
+    case route.path === '/generate': return '智能用例生成'
+    case route.path.startsWith('/task/'): return '任务详情'
     default: return ''
   }
 })
