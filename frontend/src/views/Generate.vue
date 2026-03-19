@@ -22,6 +22,11 @@
                 <span>💬</span> 钉钉文档
               </div>
             </el-radio-button>
+            <el-radio-button label="manual" class="flex-grow flex-1 text-center">
+              <div class="py-2 flex items-center justify-center gap-2">
+                <span>✍️</span> 手动输入需求描述
+              </div>
+            </el-radio-button>
             <el-radio-button label="local" class="flex-grow flex-1 text-center">
               <div class="py-2 flex items-center justify-center gap-2">
                 <span>📁</span> 本地文件上传
@@ -33,8 +38,43 @@
         <!-- Input Area -->
         <div class="mt-6 mb-8 min-h-[120px] flex items-center justify-center bg-gray-50 rounded-xl border border-gray-100 p-6">
           <transition name="fade" mode="out-in">
+            <!-- Manual Input -->
+            <div v-if="genForm.sourceType === 'manual'" class="w-full max-w-6xl" :key="'manual'">
+              <div class="manual-title">✍️ 手动输入需求描述</div>
+              <div class="manual-form-grid">
+                <div>
+                  <label class="manual-label">需求标题 <span class="required">*</span></label>
+                  <el-input
+                    v-model="genForm.manualTitle"
+                    placeholder="请输入需求标题，如：用户登录功能需求"
+                    size="large"
+                  />
+                </div>
+                <div>
+                  <label class="manual-label">需求描述 <span class="required">*</span></label>
+                  <el-input
+                    v-model="genForm.manualDescription"
+                    type="textarea"
+                    :rows="8"
+                    maxlength="2000"
+                    show-word-limit
+                    resize="none"
+                    placeholder="请详细描述您的需求，包括功能描述、使用场景、业务流程等"
+                  />
+                </div>
+                <div>
+                  <label class="manual-label">关联项目（可选）</label>
+                  <el-input
+                    v-model="genForm.relatedProject"
+                    placeholder="请输入关联项目名称，如：AI 测试平台"
+                    size="large"
+                  />
+                </div>
+              </div>
+            </div>
+
             <!-- URL Input -->
-            <div v-if="genForm.sourceType !== 'local'" class="w-full max-w-2xl" :key="'link'">
+            <div v-else-if="genForm.sourceType !== 'local'" class="w-full max-w-2xl" :key="'link'">
               <label class="block text-sm font-medium text-gray-700 mb-2">在线文档链接</label>
               <el-input
                 v-model="genForm.docUrl"
@@ -46,27 +86,27 @@
             </div>
 
             <!-- File Upload -->
-            <div v-else class="w-full max-w-2xl text-center" :key="'file'">
+            <div v-else class="w-full max-w-5xl text-left" :key="'file'">
               <el-upload
+                class="demand-upload"
                 drag
                 action="#"
                 :auto-upload="false"
                 :on-change="handleFileChange"
+                :show-file-list="false"
                 :limit="1"
                 :on-exceed="() => ElMessage.warning('每次只能上传一个文件')"
+                accept=".pdf,.doc,.docx,.txt,.md,.markdown"
               >
-                <div class="el-upload__text text-gray-500 py-6">
-                  <div class="text-4xl mb-4 opacity-50">📄</div>
-                  将文件拖到此处，或 <em class="text-indigo-600 font-semibold not-italic">点击上传</em>
-                  <div v-if="selectedFile" class="mt-3 text-indigo-600 font-medium text-sm">
-                    ✅ 已选择：{{ selectedFile.name }}
+                <div class="upload-content">
+                  <div class="upload-folder-icon">📁</div>
+                  <p class="upload-main-text">拖拽文件到此处或点击选择文件</p>
+                  <p class="upload-sub-text">支持 PDF、Word、TXT、Markdown 格式</p>
+                  <el-button type="primary" color="#3b95d9" class="upload-select-btn">选择文件</el-button>
+                  <div v-if="selectedFile" class="upload-selected-text">
+                    已选择：{{ selectedFile.name }}
                   </div>
                 </div>
-                <template #tip>
-                  <div class="el-upload__tip text-center mt-2 text-gray-400">
-                    支持 Markdown、Word (.docx) 或 PDF 格式，最大 10MB
-                  </div>
-                </template>
               </el-upload>
             </div>
           </transition>
@@ -107,11 +147,14 @@ import { addTaskToHistory } from '../utils/taskHistory'
 
 const router = useRouter()
 const isSubmitting = ref(false)
-const selectedFile = ref<any>(null)
+const selectedFile = ref<File | null>(null)
 
 const genForm = reactive({
   sourceType: 'local',
-  docUrl: ''
+  docUrl: '',
+  manualTitle: '',
+  manualDescription: '',
+  relatedProject: ''
 })
 
 const handleFileChange = (file: any) => {
@@ -120,7 +163,16 @@ const handleFileChange = (file: any) => {
 
 const submit = async () => {
   // Validate
-  if (genForm.sourceType !== 'local' && !genForm.docUrl) {
+  if (genForm.sourceType === 'manual') {
+    if (!genForm.manualTitle.trim()) {
+      ElMessage.warning('请输入需求标题')
+      return
+    }
+    if (!genForm.manualDescription.trim()) {
+      ElMessage.warning('请输入需求描述')
+      return
+    }
+  } else if (genForm.sourceType !== 'local' && !genForm.docUrl) {
     ElMessage.warning(`请输入${genForm.sourceType === 'feishu' ? '飞书' : '钉钉'}文档链接`)
     return
   }
@@ -134,30 +186,53 @@ const submit = async () => {
   try {
     const formData = new FormData()
     formData.append('source_type', genForm.sourceType)
-    if (genForm.sourceType !== 'local') {
+    formData.append('submitter', localStorage.getItem('username') || 'admin')
+    if (genForm.sourceType === 'manual') {
+      formData.append('manual_title', genForm.manualTitle.trim())
+      formData.append('manual_description', genForm.manualDescription.trim())
+      if (genForm.relatedProject.trim()) {
+        formData.append('related_project', genForm.relatedProject.trim())
+      }
+    } else if (genForm.sourceType !== 'local') {
       formData.append('doc_url', genForm.docUrl)
     } else {
+      if (!selectedFile.value) {
+        ElMessage.warning('请选择需要上传的文件')
+        isSubmitting.value = false
+        return
+      }
       formData.append('file', selectedFile.value)
     }
 
-    const response = await axios.post(
-      '/api/use_cases/submit',
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      }
-    )
+    const token = localStorage.getItem('token')
+    const headers: Record<string, string> = {}
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
 
-    if (response.data.status === 'success') {
-      const taskId = response.data.task_id
+    let response
+    try {
+      // 优先使用 RESTful 主路由
+      response = await axios.post('/api/tasks', formData, { headers })
+    } catch (primaryError: any) {
+      // 兼容旧别名路由，避免版本不一致导致提交失败
+      const status = primaryError?.response?.status
+      if (status === 404 || status === 405) {
+        response = await axios.post('/api/use_cases/submit', formData, { headers })
+      } else {
+        throw primaryError
+      }
+    }
+
+    if (response.data.code === 0) {
+      const taskId = response.data?.data?.task_id
       const sourceLabel = genForm.sourceType === 'feishu'
         ? '飞书文档'
         : genForm.sourceType === 'dingtalk'
           ? '钉钉文档'
-          : '本地文件'
+          : genForm.sourceType === 'manual'
+            ? '手动输入'
+            : '本地文件'
 
       addTaskToHistory({
         id: taskId,
@@ -169,7 +244,7 @@ const submit = async () => {
       router.push(`/task/${taskId}`)
     }
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '提交失败，请重试')
+    ElMessage.error(error.response?.data?.msg || error.response?.data?.detail || '提交失败，请重试')
   } finally {
     isSubmitting.value = false
   }
@@ -214,5 +289,94 @@ const submit = async () => {
 }
 :deep(.el-input__wrapper.is-focus) {
   box-shadow: 0 0 0 1px #4f46e5 inset;
+}
+
+.demand-upload {
+  width: 100%;
+}
+
+:deep(.demand-upload .el-upload),
+:deep(.demand-upload .el-upload-dragger) {
+  width: 100%;
+}
+
+:deep(.demand-upload .el-upload-dragger) {
+  border: 2px dashed #d5d7dd;
+  border-radius: 12px;
+  background: #fff;
+  padding: 48px 24px 40px;
+}
+
+:deep(.demand-upload .el-upload-dragger:hover) {
+  border-color: #90b6e8;
+}
+
+.upload-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 210px;
+  text-align: center;
+}
+
+.upload-folder-icon {
+  font-size: 58px;
+  line-height: 1;
+  margin-bottom: 20px;
+}
+
+.upload-main-text {
+  font-size: 30px;
+  color: #4b5563;
+  margin: 0 0 8px;
+}
+
+.upload-sub-text {
+  margin: 0 0 22px;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.upload-select-btn {
+  height: 38px;
+  border-radius: 8px;
+  padding: 0 24px;
+}
+
+.upload-selected-text {
+  margin-top: 12px;
+  color: #2563eb;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.manual-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 18px;
+}
+
+.manual-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.manual-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #374151;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.required {
+  color: #ef4444;
+}
+
+:deep(.el-textarea__inner) {
+  border-radius: 10px;
 }
 </style>

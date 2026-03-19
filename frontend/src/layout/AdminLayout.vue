@@ -41,6 +41,55 @@
           <span class="i-mdi-format-list-bulleted text-xl opacity-80 decoration-slate-400">📋</span>
           <span>任务列表</span>
         </router-link>
+
+        <button
+          class="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl transition-all duration-200"
+          :class="route.path.startsWith('/config-center') ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20 font-medium' : 'hover:bg-slate-800 hover:text-white'"
+          @click="toggleConfigMenu"
+        >
+          <div class="flex items-center gap-3">
+          <span class="i-mdi-cog-outline text-xl opacity-80">⚙️</span>
+          <span>配置中心</span>
+          </div>
+          <span class="text-xs opacity-80">{{ configMenuOpen ? '▲' : '▼' }}</span>
+        </button>
+        <div v-show="configMenuOpen" class="ml-8 space-y-1">
+          <router-link
+            to="/config-center/ai"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/ai' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            AI 模型配置
+          </router-link>
+          <router-link
+            to="/config-center/role-configs"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/role-configs' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            角色配置
+          </router-link>
+          <router-link
+            to="/config-center/prompts"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/prompts' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            提示词配置
+          </router-link>
+          <router-link
+            to="/config-center/notifications"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/notifications' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            消息提醒
+          </router-link>
+          <router-link
+            to="/config-center/behavior"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/behavior' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            生成行为配置
+          </router-link>
+        </div>
       </nav>
 
       <!-- User Area at bottom of sidebar -->
@@ -87,16 +136,36 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
 const route = useRoute()
+const configMenuOpen = ref(route.path.startsWith('/config-center'))
+
+watch(
+  () => route.path,
+  (path) => {
+    if (path.startsWith('/config-center')) {
+      configMenuOpen.value = true
+    }
+  }
+)
+
+const toggleConfigMenu = () => {
+  configMenuOpen.value = !configMenuOpen.value
+}
 
 const pageTitle = computed(() => {
   switch (true) {
     case route.path === '/tasks': return '任务列表'
     case route.path === '/dashboard': return '数据看板'
     case route.path === '/generate': return '智能用例生成'
+    case route.path === '/config-center/ai': return '配置中心 / AI 模型配置'
+    case route.path === '/config-center/role-configs': return '配置中心 / 角色配置'
+    case route.path === '/config-center/prompts': return '配置中心 / 提示词配置'
+    case route.path === '/config-center/notifications': return '配置中心 / 消息提醒'
+    case route.path === '/config-center/behavior': return '配置中心 / 生成行为配置'
     case route.path.startsWith('/task/'): return '任务详情'
     default: return ''
   }

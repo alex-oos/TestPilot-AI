@@ -1,9 +1,7 @@
 """
 Task Manager - task state backed by SQLite + in-memory cache for SSE polling.
-Each generation task runs 3 phases:
-  Phase 1: 需求分析 (Requirement Analysis)
-  Phase 2: 用例编写 (Test Case Generation)
-  Phase 3: 用例评审 (AI Review)
+Pipeline phases:
+  upload -> analysis -> generation -> review -> notify
 """
 import uuid
 import asyncio
@@ -18,16 +16,32 @@ from app.core import database
 _tasks: Dict[str, Dict[str, Any]] = {}
 
 
-def create_task(source_type: Optional[str] = None, doc_url: Optional[str] = None, user_id: Optional[int] = None) -> str:
+def create_task(
+    task_name: Optional[str] = None,
+    source_type: Optional[str] = None,
+    doc_url: Optional[str] = None,
+    file_name: Optional[str] = None,
+    file_path: Optional[str] = None,
+    status: str = "uploaded",
+    status_text: Optional[str] = "文件已上传",
+    user_id: Optional[int] = None,
+    submitter: Optional[str] = None,
+) -> str:
     """Create a new task, persist it in DB, and return task_id."""
     task_id = str(uuid.uuid4())
-    initial_status_text = "本地文件分析中" if source_type == "local" else "需求文档解析中"
+    if submitter and not user_id:
+        user = database.ensure_user(submitter)
+        user_id = user.get("id")
+
     database.create_task_record(
         task_id,
+        task_name=task_name,
         source_type=source_type,
         doc_url=doc_url,
-        status="running",
-        status_text=initial_status_text,
+        file_name=file_name,
+        file_path=file_path,
+        status=status,
+        status_text=status_text,
         user_id=user_id,
     )
 
@@ -73,8 +87,66 @@ def set_task_mindmap(task_id: str, mindmap: str):
         _tasks[task_id] = task
 
 
-def list_tasks(limit: int = 50):
-    return database.list_tasks(limit=limit)
+def set_task_decision(
+    task_id: str,
+    *,
+    decision_status: str,
+    decision_by: Optional[str] = None,
+    decision_note: Optional[str] = None,
+) -> bool:
+    ok = database.update_task_decision(
+        task_id,
+        decision_status=decision_status,
+        decision_by=decision_by,
+        decision_note=decision_note,
+    )
+    task = database.get_task_record(task_id)
+    if task:
+        _tasks[task_id] = task
+    return ok
+
+
+def reset_task_for_retry(task_id: str, status_text: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    ok = database.reset_task_for_retry(task_id, status_text=status_text)
+    if not ok:
+        return None
+    task = database.get_task_record(task_id)
+    if task:
+        _tasks[task_id] = task
+    return task
+
+
+def delete_task(task_id: str) -> bool:
+    deleted = database.delete_task_record(task_id)
+    _tasks.pop(task_id, None)
+    return deleted
+
+
+def delete_tasks(task_ids: list[str]) -> int:
+    deleted_count = database.delete_task_records(task_ids)
+    for task_id in task_ids:
+        _tasks.pop(task_id, None)
+    return deleted_count
+
+
+def list_tasks(
+    page: int = 1,
+    page_size: int = 10,
+    task_name: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    status: Optional[str] = None,
+    submitter: Optional[str] = None,
+):
+    return database.list_tasks(
+        page=page,
+        page_size=page_size,
+        task_name=task_name,
+        task_id=task_id,
+        source_type=source_type,
+        status=status,
+        submitter=submitter,
+    )
 
 
 async def stream_task_events(task_id: str) -> AsyncGenerator[str, None]:
@@ -91,7 +163,14 @@ async def stream_task_events(task_id: str) -> AsyncGenerator[str, None]:
 
         yield _sse_event(task)
 
-        if task["status"] in ("completed", "failed"):
+        if task["status"] in (
+            "completed",
+            "waiting_decision",
+            "analysis_failed",
+            "generation_failed",
+            "review_failed",
+            "failed",
+        ):
             break
 
         await asyncio.sleep(0.8)

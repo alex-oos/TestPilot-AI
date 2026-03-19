@@ -1,5 +1,6 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
+argon2-cffi==25.1.0
 anyio==4.12.1
 certifi==2026.2.25
 click==8.3.1
@@ -24,6 +25,7 @@ pydantic==2.12.5
 pydantic-extra-types==2.11.1
 pydantic-settings==2.13.1
 pydantic_core==2.41.5
+PyJWT==2.10.1
 Pygments==2.19.2
 python-dotenv==1.2.2
 python-multipart==0.0.22
@@ -34,6 +36,7 @@ rignore==0.7.6
 sentry-sdk==2.54.0
 shellingham==1.5.4
 starlette==0.52.1
+SQLAlchemy==2.0.41
 typer==0.24.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0

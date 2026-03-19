@@ -12,7 +12,7 @@ async def process_generation_request(source_type: str, doc_url: Optional[str], f
     # 1. 文档解析 - 提取需求文本
     text_content = ""
     
-    if source_type not in ["feishu", "dingtalk", "local"]:
+    if source_type not in ["feishu", "dingtalk", "local", "manual"]:
         logger.error(f"Invalid source type received: {source_type}")
         raise HTTPException(status_code=400, detail="来源类型无效")
         
@@ -29,6 +29,10 @@ async def process_generation_request(source_type: str, doc_url: Optional[str], f
             raise HTTPException(status_code=400, detail="本地上传必须提供文件")
         # 从文件中提取文本
         text_content = await parse_uploaded_file(file)
+    if source_type == "manual":
+        if not doc_url:
+            raise HTTPException(status_code=400, detail="手动输入模式必须提供需求内容")
+        text_content = doc_url
         
     if not text_content:
         raise HTTPException(status_code=400, detail="无法从文档中提取到文本内容")

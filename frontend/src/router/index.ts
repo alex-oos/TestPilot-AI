@@ -25,6 +25,39 @@ const routes: Array<RouteRecordRaw> = [
         path: 'task/:id',
         name: 'TaskDetail',
         component: () => import('../views/TaskDetail.vue')
+      },
+      {
+        path: 'config-center',
+        redirect: '/config-center/ai'
+      },
+      {
+        path: 'config-center/ai',
+        name: 'ConfigCenterAI',
+        component: () => import('../views/ConfigCenter.vue')
+      },
+      {
+        path: 'config-center/role-configs',
+        name: 'ConfigCenterRoleConfigs',
+        component: () => import('../views/RoleModelMapping.vue')
+      },
+      {
+        path: 'config-center/role-models',
+        redirect: '/config-center/role-configs'
+      },
+      {
+        path: 'config-center/prompts',
+        name: 'ConfigCenterPrompts',
+        component: () => import('../views/ConfigCenter.vue')
+      },
+      {
+        path: 'config-center/behavior',
+        name: 'ConfigCenterBehavior',
+        component: () => import('../views/ConfigCenter.vue')
+      },
+      {
+        path: 'config-center/notifications',
+        name: 'ConfigCenterNotifications',
+        component: () => import('../views/ConfigCenter.vue')
       }
     ]
   },

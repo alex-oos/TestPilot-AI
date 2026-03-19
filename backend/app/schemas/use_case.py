@@ -46,3 +46,22 @@ class SyncRequest(BaseModel):
 class ExportRequest(BaseModel):
     cases: List[Dict[str, Any]]
     title: Optional[str] = "AI自动生成测试用例"
+
+
+class DeleteTasksRequest(BaseModel):
+    task_ids: List[str]
+
+
+class ReviewCaseItem(BaseModel):
+    id: Optional[Any] = None
+    module: Optional[str] = ""
+    title: Optional[str] = ""
+    precondition: Optional[str] = ""
+    steps: Optional[str] = ""
+    expected_result: Optional[str] = ""
+    priority: Optional[str] = "中"
+    adoption_status: Optional[str] = "accepted"
+
+
+class UpdateReviewCasesRequest(BaseModel):
+    cases: List[ReviewCaseItem]

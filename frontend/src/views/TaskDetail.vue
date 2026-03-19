@@ -23,100 +23,177 @@
     </div>
 
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 md:p-8">
-      <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center justify-between mb-8">
         <h2 class="text-lg font-semibold text-gray-800">AI 正在生成测试用例...</h2>
-        <span class="text-sm text-gray-400">按阶段线性执行</span>
+        <span class="text-sm text-gray-400">横向时间线</span>
       </div>
 
-      <div class="space-y-4">
+      <div class="relative pb-3">
+        <div class="absolute top-5 left-0 right-0 h-1 bg-slate-200 rounded-full"></div>
         <div
-          v-for="stage in orderedStages"
-          :key="stage.key"
-          class="rounded-2xl border overflow-hidden transition-all"
-          :class="stageContainerClass(stage)"
-        >
+          class="absolute top-5 left-0 h-1 bg-indigo-500 rounded-full transition-all duration-500"
+          :style="{ width: timelineProgressWidth }"
+        ></div>
+
+        <div class="relative grid grid-cols-3 gap-4">
           <button
-            class="w-full text-left px-5 py-4 md:px-7 md:py-5 flex items-center justify-between gap-4"
-            :class="stageHeaderClass(stage)"
-            @click="toggleStage(stage.key)"
+            v-for="stage in orderedStages"
+            :key="stage.key"
+            class="flex flex-col items-center text-center gap-2 py-1"
+            :class="{ 'cursor-not-allowed opacity-45': !canSelectStage(stage) }"
+            :disabled="!canSelectStage(stage)"
+            @click="selectStage(stage)"
           >
-            <div class="flex items-center gap-3 min-w-0">
-              <div class="text-2xl shrink-0">{{ stage.icon }}</div>
-              <div class="min-w-0">
-                <div class="text-xl font-bold text-white truncate">{{ stage.title }}</div>
-                <div class="text-white/90 text-sm mt-1 flex items-center gap-2">
-                  <span class="px-2 py-0.5 rounded-full bg-white/20">Stage {{ stage.index }}</span>
-                  <span>{{ phaseStatusLabel(stage.phase.status) }}</span>
-                </div>
-              </div>
+            <div
+              class="w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-bold transition-all"
+              :class="stageDotClass(stage)"
+            >
+              <span v-if="stage.phase.status === 'running'" class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin inline-block"></span>
+              <span v-else-if="stage.phase.status === 'completed'">✓</span>
+              <span v-else-if="stage.phase.status === 'failed'">✕</span>
+              <span v-else>{{ stage.index }}</span>
             </div>
-            <span class="text-2xl text-white/90 shrink-0">{{ isExpanded(stage.key) ? '⌃' : '⌄' }}</span>
+            <div class="text-sm font-semibold text-slate-800">{{ stage.title }}</div>
+            <div class="text-xs" :class="stageTextClass(stage.phase.status)">{{ phaseStatusLabel(stage.phase.status) }}</div>
           </button>
+        </div>
+      </div>
 
-          <div v-if="isExpanded(stage.key)" class="bg-white px-5 py-5 md:px-7 md:py-6 border-t" :class="stageBodyBorderClass(stage)">
-            <div class="mb-4">
-              <div class="h-2 bg-slate-100 rounded-full overflow-hidden">
-                <div
-                  class="h-full rounded-full transition-all duration-500"
-                  :class="stageProgressColorClass(stage)"
-                  :style="{ width: `${stageProgress(stage.phase.status)}%` }"
-                ></div>
-              </div>
-              <p class="text-sm text-gray-500 mt-2">{{ stageHint(stage) }}</p>
+      <div class="mt-6 rounded-2xl border p-5 md:p-6" :class="stageContainerClass(selectedStageData)">
+        <div class="mb-4">
+          <div class="flex items-center gap-3">
+            <span class="text-2xl">{{ selectedStageData.icon }}</span>
+            <div>
+              <h3 class="text-xl font-bold text-slate-800">{{ selectedStageData.title }}</h3>
+              <p class="text-sm text-slate-500">Stage {{ selectedStageData.index }} · {{ phaseStatusLabel(selectedStageData.phase.status) }}</p>
+            </div>
+          </div>
+          <div class="h-2 bg-slate-100 rounded-full overflow-hidden mt-4">
+            <div
+              class="h-full rounded-full transition-all duration-500"
+              :class="stageProgressColorClass(selectedStageData)"
+              :style="{ width: `${stageProgress(selectedStageData.phase.status)}%` }"
+            ></div>
+          </div>
+          <p class="text-sm text-gray-500 mt-2">{{ stageHint(selectedStageData) }}</p>
+        </div>
+
+        <div v-if="selectedStage === 'analysis'" class="space-y-4">
+          <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+            <p class="text-sm font-semibold text-slate-700 mb-2">需求内容</p>
+            <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ sourceRequirementText || '等待需求解析内容...' }}</pre>
+          </div>
+          <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+            <p class="text-sm font-semibold text-blue-700 mb-2">需求分析</p>
+            <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ analysisText || '等待分析结果...' }}</pre>
+          </div>
+          <div class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+            <p class="text-sm font-semibold text-indigo-700 mb-2">测试策略</p>
+            <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ designText || '等待策略输出...' }}</pre>
+          </div>
+        </div>
+
+        <div v-if="selectedStage === 'generation'" class="space-y-4">
+          <div class="flex items-center justify-between bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
+            <span class="text-sm text-slate-600">已生成测试用例</span>
+            <span class="text-xl font-bold text-slate-800">{{ cases.length }}</span>
+          </div>
+          <div class="rounded-xl border border-purple-100 bg-purple-50/40 p-4">
+            <p class="text-sm font-semibold text-purple-700 mb-2">用例预览（前 5 条）</p>
+            <ul v-if="cases.length" class="space-y-2">
+              <li v-for="item in cases.slice(0, 5)" :key="item.id" class="text-sm text-slate-700">
+                {{ item.id }}. {{ item.title }}
+              </li>
+            </ul>
+            <p v-else class="text-sm text-slate-500">等待用例生成中...</p>
+          </div>
+        </div>
+
+        <div v-if="selectedStage === 'review'" class="space-y-4">
+          <div class="flex items-center gap-4 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+            <div class="text-center min-w-[80px]">
+              <div class="text-3xl font-black" :class="scoreColor">{{ review.quality_score ?? '--' }}</div>
+              <div class="text-xs text-gray-500">质量评分</div>
+            </div>
+            <div class="flex-1">
+              <el-progress :percentage="review.quality_score ?? 0" :color="scoreProgressColor" :stroke-width="8" />
+              <p class="text-sm text-slate-600 mt-2">{{ review.summary || '等待评审结果...' }}</p>
+            </div>
+          </div>
+
+          <div v-if="review.issues?.length" class="rounded-xl border border-red-100 bg-red-50/40 p-4">
+            <p class="text-sm font-semibold text-red-700 mb-2">发现问题（{{ review.issues.length }}）</p>
+            <ul class="space-y-2">
+              <li v-for="(issue, i) in review.issues" :key="i" class="text-sm text-slate-700">• {{ issue }}</li>
+            </ul>
+          </div>
+
+          <div class="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
+            <div class="flex items-center justify-between mb-3">
+              <p class="text-sm font-semibold text-slate-700">评审修改（可直接编辑）</p>
+              <el-button
+                size="small"
+                type="primary"
+                color="#4f46e5"
+                :loading="savingReviewCases"
+                @click="saveReviewCases"
+                class="!rounded-lg"
+              >
+                保存评审结果
+              </el-button>
             </div>
 
-            <div v-if="stage.key === 'analysis'" class="space-y-4">
-              <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-                <p class="text-sm font-semibold text-blue-700 mb-2">需求分析</p>
-                <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ analysisText || '等待分析结果...' }}</pre>
-              </div>
-              <div class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-                <p class="text-sm font-semibold text-indigo-700 mb-2">测试策略</p>
-                <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ designText || '等待策略输出...' }}</pre>
-              </div>
-            </div>
-
-            <div v-if="stage.key === 'generation'" class="space-y-4">
-              <div class="flex items-center justify-between bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
-                <span class="text-sm text-slate-600">已生成测试用例</span>
-                <span class="text-xl font-bold text-slate-800">{{ cases.length }}</span>
-              </div>
-              <div class="rounded-xl border border-purple-100 bg-purple-50/40 p-4">
-                <p class="text-sm font-semibold text-purple-700 mb-2">用例预览（前 5 条）</p>
-                <ul v-if="cases.length" class="space-y-2">
-                  <li v-for="item in cases.slice(0, 5)" :key="item.id" class="text-sm text-slate-700">
-                    {{ item.id }}. {{ item.title }}
-                  </li>
-                </ul>
-                <p v-else class="text-sm text-slate-500">等待用例生成中...</p>
-              </div>
-            </div>
-
-            <div v-if="stage.key === 'review'" class="space-y-4">
-              <div class="flex items-center gap-4 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
-                <div class="text-center min-w-[80px]">
-                  <div class="text-3xl font-black" :class="scoreColor">{{ review.quality_score ?? '--' }}</div>
-                  <div class="text-xs text-gray-500">质量评分</div>
-                </div>
-                <div class="flex-1">
-                  <el-progress :percentage="review.quality_score ?? 0" :color="scoreProgressColor" :stroke-width="8" />
-                  <p class="text-sm text-slate-600 mt-2">{{ review.summary || '等待评审结果...' }}</p>
-                </div>
-              </div>
-
-              <div v-if="review.issues?.length" class="rounded-xl border border-red-100 bg-red-50/40 p-4">
-                <p class="text-sm font-semibold text-red-700 mb-2">发现问题（{{ review.issues.length }}）</p>
-                <ul class="space-y-2">
-                  <li v-for="(issue, i) in review.issues" :key="i" class="text-sm text-slate-700">• {{ issue }}</li>
-                </ul>
-              </div>
-            </div>
+            <el-table :data="reviewEditableCases" border style="width: 100%">
+              <el-table-column prop="id" label="编号" width="70" align="center" />
+              <el-table-column label="模块" min-width="120">
+                <template #default="scope">
+                  <el-input v-model="scope.row.module" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="用例标题" min-width="220">
+                <template #default="scope">
+                  <el-input v-model="scope.row.title" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="步骤" min-width="240">
+                <template #default="scope">
+                  <el-input v-model="scope.row.steps" size="small" type="textarea" :rows="2" />
+                </template>
+              </el-table-column>
+              <el-table-column label="预期结果" min-width="200">
+                <template #default="scope">
+                  <el-input v-model="scope.row.expected_result" size="small" type="textarea" :rows="2" />
+                </template>
+              </el-table-column>
+              <el-table-column label="优先级" width="110" align="center">
+                <template #default="scope">
+                  <el-select v-model="scope.row.priority" size="small">
+                    <el-option label="高" value="高" />
+                    <el-option label="中" value="中" />
+                    <el-option label="低" value="低" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="120" align="center">
+                <template #default="scope">
+                  <el-select v-model="scope.row.adoption_status" size="small">
+                    <el-option label="采纳" value="accepted" />
+                    <el-option label="不采纳" value="rejected" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="100" align="center">
+                <template #default="scope">
+                  <el-button link type="danger" @click="removeReviewCase(scope.$index)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
         </div>
       </div>
     </div>
 
-    <div v-if="task.status === 'completed'" class="animate-fade-in-up">
+    <div v-if="showFinalArtifacts" class="animate-fade-in-up">
       <el-tabs v-model="activeTab" class="results-tabs">
         <el-tab-pane label="📋 测试用例" name="cases">
           <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mt-4">
@@ -150,6 +227,13 @@
                   </el-tag>
                 </template>
               </el-table-column>
+              <el-table-column label="状态" width="100" align="center">
+                <template #default="scope">
+                  <el-tag :type="scope.row.adoption_status === 'rejected' ? 'danger' : 'success'" effect="light" round size="small">
+                    {{ scope.row.adoption_status === 'rejected' ? '不采纳' : '采纳' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
         </el-tab-pane>
@@ -169,7 +253,7 @@
       </el-tabs>
     </div>
 
-    <div v-if="task.status === 'failed'" class="bg-white rounded-2xl border border-red-200 shadow-sm p-8 text-center">
+    <div v-if="isTaskFailed(task.status)" class="bg-white rounded-2xl border border-red-200 shadow-sm p-8 text-center">
       <div class="text-5xl mb-4">😞</div>
       <h3 class="text-xl font-bold text-red-600 mb-2">任务执行失败</h3>
       <p class="text-gray-500 text-sm mb-6">{{ task.error || '发生未知错误，请重试' }}</p>
@@ -193,7 +277,9 @@ const taskId = route.params.id as string
 
 const activeTab = ref('cases')
 const exporting = ref({ excel: false, xmind: false, ms: false })
-const expandedStages = ref<PhaseKey[]>(['analysis'])
+const selectedStage = ref<PhaseKey>('analysis')
+const reviewEditableCases = ref<any[]>([])
+const savingReviewCases = ref(false)
 
 const task = ref<any>({
   id: taskId,
@@ -213,6 +299,10 @@ const stageMeta: Record<PhaseKey, { index: number; title: string; icon: string }
   review: { index: 3, title: '测试用例评审阶段', icon: '📝' },
 }
 
+function isTaskFailed(status?: string) {
+  return ['analysis_failed', 'generation_failed', 'review_failed', 'failed'].includes(status || '')
+}
+
 let eventSource: EventSource | null = null
 
 onMounted(async () => {
@@ -229,6 +319,7 @@ async function fetchTaskSnapshot() {
     const resp = await axios.get(`/api/use_cases/task/${taskId}`)
     if (resp.data?.data) {
       task.value = { ...task.value, ...resp.data.data }
+      hydrateReviewEditableCases(true)
       syncExpandedStage()
       updateTaskStatusInHistory(taskId, task.value.status)
     }
@@ -244,10 +335,11 @@ function startSSE() {
     try {
       const data = JSON.parse(e.data)
       task.value = { ...task.value, ...data }
+      hydrateReviewEditableCases()
       syncExpandedStage()
       updateTaskStatusInHistory(taskId, task.value.status)
 
-      if (data.status === 'completed' || data.status === 'failed') {
+      if (data.status === 'completed' || isTaskFailed(data.status) || data.status === 'waiting_decision') {
         eventSource?.close()
       }
     } catch (err) {
@@ -272,16 +364,99 @@ const orderedStages = computed(() => {
     phase: phases[key] ?? { status: 'pending', label: stageMeta[key].title, data: null }
   }))
 })
+const selectedStageData = computed(() => {
+  return orderedStages.value.find((item) => item.key === selectedStage.value) ?? orderedStages.value[0]
+})
 
-const cases = computed<any[]>(() => task.value.phases?.generation?.data?.cases ?? [])
-const analysisText = computed(() => task.value.phases?.analysis?.data?.analysis ?? '')
-const designText = computed(() => task.value.phases?.analysis?.data?.design ?? '')
-const review = computed(() => task.value.phases?.review?.data?.review ?? {})
+const reachableStageIndex = computed(() => {
+  if (task.value.status === 'completed' || task.value.status === 'waiting_decision') return 3
+
+  const phases = task.value.phases ?? {}
+  if (phases.review?.status && phases.review.status !== 'pending') return 3
+  if (phases.generation?.status && phases.generation.status !== 'pending') return 2
+  return 1
+})
+const timelineProgressWidth = computed(() => {
+  const done = orderedStages.value.filter((s) => s.phase.status === 'completed').length
+  const running = orderedStages.value.some((s) => s.phase.status === 'running') ? 0.5 : 0
+  return `${Math.round(((done + running) / orderedStages.value.length) * 100)}%`
+})
+
+const showFinalArtifacts = computed(() => {
+  const phases = task.value.phases ?? {}
+  return phases.generation?.status === 'completed' && phases.review?.status === 'completed'
+})
+
+const cases = computed<any[]>(() => {
+  const data = task.value.phases?.generation?.data
+  let result: any[] = []
+  if (data && typeof data === 'object') {
+    result = data.cases ?? []
+  }
+  return result.map((item: any) => ({
+    ...item,
+    adoption_status: item?.adoption_status === 'rejected' ? 'rejected' : 'accepted',
+  }))
+})
+
+const sourceRequirementText = computed(() => {
+  const data = task.value.phases?.analysis?.data
+  if (typeof data === 'string') return data
+  if (data && typeof data === 'object') return data.source_text ?? ''
+  return ''
+})
+
+const analysisText = computed(() => {
+  const data = task.value.phases?.analysis?.data
+  if (typeof data === 'string') return data
+  if (data && typeof data === 'object') return data.analysis ?? ''
+  return ''
+})
+
+const designText = computed(() => {
+  const data = task.value.phases?.analysis?.data
+  if (data && typeof data === 'object') return data.design ?? ''
+  return ''
+})
+
+const review = computed(() => {
+  const data = task.value.phases?.review?.data
+  if (data && typeof data === 'object') return data.review ?? {}
+  return {}
+})
+
+function normalizeReviewCase(item: any, fallbackId: number) {
+  return {
+    id: item?.id ?? fallbackId,
+    module: item?.module ?? '',
+    title: item?.title ?? '',
+    precondition: item?.precondition ?? '',
+    steps: item?.steps ?? '',
+    expected_result: item?.expected_result ?? '',
+    priority: item?.priority ?? '中',
+    adoption_status: item?.adoption_status === 'rejected' ? 'rejected' : 'accepted',
+  }
+}
+
+function hydrateReviewEditableCases(force = false) {
+  if (!force && reviewEditableCases.value.length) return
+  const reviewed = review.value?.reviewed_cases
+  if (Array.isArray(reviewed) && reviewed.length) {
+    reviewEditableCases.value = reviewed.map((item: any, idx: number) => normalizeReviewCase(item, idx + 1))
+    return
+  }
+  reviewEditableCases.value = cases.value.map((item: any, idx: number) => normalizeReviewCase(item, idx + 1))
+}
 
 const bannerClass = computed(() => {
   switch (task.value.status) {
+    case 'queued': return 'bg-gradient-to-r from-slate-500 to-slate-600 text-white'
     case 'running': return 'bg-gradient-to-r from-blue-600 to-blue-500 text-white'
+    case 'waiting_decision': return 'bg-gradient-to-r from-amber-500 to-orange-500 text-white'
     case 'completed': return 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
+    case 'analysis_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
+    case 'generation_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
+    case 'review_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
     case 'failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
     default: return 'bg-gray-100 text-gray-600'
   }
@@ -289,8 +464,13 @@ const bannerClass = computed(() => {
 
 const bannerIcon = computed(() => {
   switch (task.value.status) {
+    case 'queued': return '🕒'
     case 'running': return '🤖'
+    case 'waiting_decision': return '📩'
     case 'completed': return '🎉'
+    case 'analysis_failed': return '❌'
+    case 'generation_failed': return '❌'
+    case 'review_failed': return '❌'
     case 'failed': return '❌'
     default: return '⏳'
   }
@@ -298,9 +478,15 @@ const bannerIcon = computed(() => {
 
 const bannerTitle = computed(() => {
   switch (task.value.status) {
+    case 'uploaded': return '文件已上传，待启动分析'
+    case 'queued': return '任务排队中，准备执行...'
     case 'pending': return '任务已创建，等待执行...'
     case 'running': return 'AI 正在生成测试用例...'
+    case 'waiting_decision': return '已发送钉钉通知，等待采纳确认'
     case 'completed': return '全部完成！测试用例已生成'
+    case 'analysis_failed': return '需求分析异常'
+    case 'generation_failed': return '用例编写异常'
+    case 'review_failed': return '用例评审异常'
     case 'failed': return '任务执行失败'
     default: return ''
   }
@@ -309,6 +495,7 @@ const bannerTitle = computed(() => {
 const bannerSubtitle = computed(() => {
   const running = Object.values(task.value.phases ?? {}).find((p: any) => p.status === 'running') as any
   if (running) return `当前正在执行：${running.label}`
+  if (task.value.status === 'waiting_decision') return '请在钉钉中确认是否采纳'
   if (task.value.status === 'completed') return `共生成 ${cases.value.length} 条测试用例，质量评分 ${review.value.quality_score ?? '--'} 分`
   return '请稍候...'
 })
@@ -325,26 +512,22 @@ const scoreProgressColor = computed(() => {
 
 function syncExpandedStage() {
   const current = orderedStages.value.find((s) => s.phase.status === 'running')
-  if (current && !expandedStages.value.includes(current.key)) {
-    expandedStages.value = [current.key]
+  if (current) {
+    selectedStage.value = current.key
     return
   }
 
-  if (task.value.status === 'completed') {
-    expandedStages.value = ['review']
+  const failed = orderedStages.value.find((s) => s.phase.status === 'failed')
+  if (failed) {
+    selectedStage.value = failed.key
+    return
   }
-}
 
-function toggleStage(key: PhaseKey) {
-  if (isExpanded(key)) {
-    expandedStages.value = expandedStages.value.filter((k) => k !== key)
-  } else {
-    expandedStages.value = [key]
+  if (task.value.status === 'completed' || task.value.status === 'waiting_decision') {
+    selectedStage.value = 'review'
+    return
   }
-}
-
-function isExpanded(key: PhaseKey) {
-  return expandedStages.value.includes(key)
+  selectedStage.value = 'analysis'
 }
 
 function stageProgress(status: string) {
@@ -376,12 +559,6 @@ function stageHint(stage: any) {
   }
 }
 
-function stageHeaderClass(stage: any) {
-  if (stage.index === 1) return 'bg-gradient-to-r from-blue-600 to-blue-500'
-  if (stage.index === 2) return 'bg-gradient-to-r from-violet-600 to-purple-500'
-  return 'bg-gradient-to-r from-emerald-600 to-green-500'
-}
-
 function stageContainerClass(stage: any) {
   return stage.phase.status === 'failed'
     ? 'border-red-200'
@@ -390,17 +567,68 @@ function stageContainerClass(stage: any) {
       : 'border-slate-200'
 }
 
-function stageBodyBorderClass(stage: any) {
-  if (stage.index === 1) return 'border-blue-100'
-  if (stage.index === 2) return 'border-purple-100'
-  return 'border-emerald-100'
-}
-
 function stageProgressColorClass(stage: any) {
   if (stage.phase.status === 'failed') return 'bg-red-500'
   if (stage.index === 1) return 'bg-blue-500'
   if (stage.index === 2) return 'bg-purple-500'
   return 'bg-emerald-500'
+}
+
+function stageDotClass(stage: any) {
+  if (stage.phase.status === 'failed') return 'bg-red-500 border-red-500 text-white'
+  if (stage.phase.status === 'completed') return 'bg-emerald-500 border-emerald-500 text-white'
+  if (stage.phase.status === 'running') return 'bg-indigo-500 border-indigo-500 text-white'
+  return selectedStage.value === stage.key
+    ? 'bg-indigo-50 border-indigo-500 text-indigo-600'
+    : 'bg-white border-slate-300 text-slate-500'
+}
+
+function stageTextClass(status: string) {
+  if (status === 'failed') return 'text-red-500'
+  if (status === 'completed') return 'text-emerald-600'
+  if (status === 'running') return 'text-indigo-600'
+  return 'text-slate-400'
+}
+
+function canSelectStage(stage: any) {
+  return stage.index <= reachableStageIndex.value
+}
+
+function selectStage(stage: any) {
+  if (!canSelectStage(stage)) return
+  selectedStage.value = stage.key
+}
+
+function removeReviewCase(index: number) {
+  reviewEditableCases.value.splice(index, 1)
+}
+
+async function saveReviewCases() {
+  if (!reviewEditableCases.value.length) {
+    ElMessage.warning('请至少保留一条评审用例')
+    return
+  }
+  savingReviewCases.value = true
+  try {
+    const payload = {
+      cases: reviewEditableCases.value.map((item, idx) => ({
+        ...normalizeReviewCase(item, idx + 1),
+      })),
+    }
+    const resp = await axios.put(`/api/use_cases/task/${taskId}/review-cases`, payload)
+    const data = resp.data?.data || {}
+    if (data.task) {
+      task.value = { ...task.value, ...data.task }
+    } else {
+      await fetchTaskSnapshot()
+    }
+    hydrateReviewEditableCases(true)
+    ElMessage.success(`评审已保存：采纳 ${data.adopted_count ?? 0} 条，不采纳 ${data.rejected_count ?? 0} 条`)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.msg || error?.response?.data?.detail || '保存评审失败')
+  } finally {
+    savingReviewCases.value = false
+  }
 }
 
 async function exportExcel() {

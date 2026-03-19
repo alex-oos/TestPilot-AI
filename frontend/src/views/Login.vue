@@ -85,6 +85,18 @@ const loginForm = reactive({
   remember: false
 })
 
+const DEFAULT_API_BASE = '/api'
+const DIRECT_BACKEND_API_BASE = 'http://127.0.0.1:8001/api'
+const apiBase = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(/\/$/, '')
+
+const doLoginRequest = (base: string) => {
+  const normalizedBase = (base || DEFAULT_API_BASE).replace(/\/$/, '')
+  return axios.post(`${normalizedBase}/login`, {
+    username: loginForm.username,
+    password: loginForm.password
+  })
+}
+
 const handleLogin = async () => {
   if (!loginForm.username || !loginForm.password) {
     ElMessage.warning('请输入用户名和密码')
@@ -93,18 +105,37 @@ const handleLogin = async () => {
   
   loading.value = true
   try {
-    const response = await axios.post('/api/login', {
-      username: loginForm.username,
-      password: loginForm.password
-    })
-    
-    if (response.data.token) {
-      localStorage.setItem('token', response.data.token)
-      ElMessage.success('登录成功！')
-      router.push('/tasks')
+    let response
+    try {
+      response = await doLoginRequest(DIRECT_BACKEND_API_BASE)
+    } catch (directError: any) {
+      // 直连失败后再回退到代理地址，兼容不同开发环境
+      try {
+        response = await doLoginRequest(apiBase)
+      } catch (proxyError: any) {
+        throw proxyError?.response ? proxyError : directError
+      }
     }
+
+    const payload = response.data?.data || {}
+    if (!payload.token) {
+      ElMessage.error(response.data?.msg || '登录失败：未获取到 token')
+      return
+    }
+
+    localStorage.setItem('token', payload.token)
+    localStorage.setItem('username', payload.user || loginForm.username)
+    if (payload.user_id) {
+      localStorage.setItem('user_id', String(payload.user_id))
+    }
+    ElMessage.success('登录成功！')
+    router.push('/tasks')
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '登录失败')
+    if (error?.response?.status === 502 || !error?.response) {
+      ElMessage.error('登录失败：后端服务不可达，请检查后端是否已启动（127.0.0.1:8001）')
+      return
+    }
+    ElMessage.error(error.response?.data?.msg || error.response?.data?.detail || '登录失败')
   } finally {
     loading.value = false
   }
