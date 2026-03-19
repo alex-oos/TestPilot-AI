@@ -1,8 +1,22 @@
+from datetime import datetime, timedelta, timezone
+
+import jwt
 from fastapi import HTTPException
 from loguru import logger
 
 from app.core import database
+from app.core.config import settings
 from app.schemas.user import LoginRequest
+
+
+def _create_access_token(username: str) -> str:
+    expire_at = datetime.now(timezone.utc) + timedelta(days=settings.JWT_EXPIRE_DAYS)
+    payload = {
+        "sub": username,
+        "username": username,
+        "exp": expire_at,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def authenticate_user(request: LoginRequest) -> dict:
@@ -20,9 +34,10 @@ def authenticate_user(request: LoginRequest) -> dict:
         logger.warning(f"Failed login attempt for user: {request.username} (wrong password)")
         raise HTTPException(status_code=401, detail="账号或密码不正确")
 
+    token = _create_access_token(request.username)
     logger.success(f"User {request.username} authenticated successfully.")
     return {
-        "token": "mock-jwt-token-12345",
+        "token": token,
         "user": request.username,
         "user_id": user["id"],
     }

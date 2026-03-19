@@ -23,94 +23,103 @@
     </div>
 
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 md:p-8">
-      <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center justify-between mb-8">
         <h2 class="text-lg font-semibold text-gray-800">AI 正在生成测试用例...</h2>
-        <span class="text-sm text-gray-400">按阶段线性执行</span>
+        <span class="text-sm text-gray-400">横向时间线</span>
       </div>
 
-      <div class="space-y-4">
+      <div class="relative pb-3">
+        <div class="absolute top-5 left-0 right-0 h-1 bg-slate-200 rounded-full"></div>
         <div
-          v-for="stage in orderedStages"
-          :key="stage.key"
-          class="rounded-2xl border overflow-hidden transition-all"
-          :class="stageContainerClass(stage)"
-        >
+          class="absolute top-5 left-0 h-1 bg-indigo-500 rounded-full transition-all duration-500"
+          :style="{ width: timelineProgressWidth }"
+        ></div>
+
+        <div class="relative grid grid-cols-3 gap-4">
           <button
-            class="w-full text-left px-5 py-4 md:px-7 md:py-5 flex items-center justify-between gap-4"
-            :class="stageHeaderClass(stage)"
-            @click="toggleStage(stage.key)"
+            v-for="stage in orderedStages"
+            :key="stage.key"
+            class="flex flex-col items-center text-center gap-2 py-1"
+            @click="selectedStage = stage.key"
           >
-            <div class="flex items-center gap-3 min-w-0">
-              <div class="text-2xl shrink-0">{{ stage.icon }}</div>
-              <div class="min-w-0">
-                <div class="text-xl font-bold text-white truncate">{{ stage.title }}</div>
-                <div class="text-white/90 text-sm mt-1 flex items-center gap-2">
-                  <span class="px-2 py-0.5 rounded-full bg-white/20">Stage {{ stage.index }}</span>
-                  <span>{{ phaseStatusLabel(stage.phase.status) }}</span>
-                </div>
-              </div>
+            <div
+              class="w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-bold transition-all"
+              :class="stageDotClass(stage)"
+            >
+              <span v-if="stage.phase.status === 'running'" class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin inline-block"></span>
+              <span v-else-if="stage.phase.status === 'completed'">✓</span>
+              <span v-else-if="stage.phase.status === 'failed'">✕</span>
+              <span v-else>{{ stage.index }}</span>
             </div>
-            <span class="text-2xl text-white/90 shrink-0">{{ isExpanded(stage.key) ? '⌃' : '⌄' }}</span>
+            <div class="text-sm font-semibold text-slate-800">{{ stage.title }}</div>
+            <div class="text-xs" :class="stageTextClass(stage.phase.status)">{{ phaseStatusLabel(stage.phase.status) }}</div>
           </button>
+        </div>
+      </div>
 
-          <div v-if="isExpanded(stage.key)" class="bg-white px-5 py-5 md:px-7 md:py-6 border-t" :class="stageBodyBorderClass(stage)">
-            <div class="mb-4">
-              <div class="h-2 bg-slate-100 rounded-full overflow-hidden">
-                <div
-                  class="h-full rounded-full transition-all duration-500"
-                  :class="stageProgressColorClass(stage)"
-                  :style="{ width: `${stageProgress(stage.phase.status)}%` }"
-                ></div>
-              </div>
-              <p class="text-sm text-gray-500 mt-2">{{ stageHint(stage) }}</p>
+      <div class="mt-6 rounded-2xl border p-5 md:p-6" :class="stageContainerClass(selectedStageData)">
+        <div class="mb-4">
+          <div class="flex items-center gap-3">
+            <span class="text-2xl">{{ selectedStageData.icon }}</span>
+            <div>
+              <h3 class="text-xl font-bold text-slate-800">{{ selectedStageData.title }}</h3>
+              <p class="text-sm text-slate-500">Stage {{ selectedStageData.index }} · {{ phaseStatusLabel(selectedStageData.phase.status) }}</p>
             </div>
+          </div>
+          <div class="h-2 bg-slate-100 rounded-full overflow-hidden mt-4">
+            <div
+              class="h-full rounded-full transition-all duration-500"
+              :class="stageProgressColorClass(selectedStageData)"
+              :style="{ width: `${stageProgress(selectedStageData.phase.status)}%` }"
+            ></div>
+          </div>
+          <p class="text-sm text-gray-500 mt-2">{{ stageHint(selectedStageData) }}</p>
+        </div>
 
-            <div v-if="stage.key === 'analysis'" class="space-y-4">
-              <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-                <p class="text-sm font-semibold text-blue-700 mb-2">需求分析</p>
-                <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ analysisText || '等待分析结果...' }}</pre>
-              </div>
-              <div class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-                <p class="text-sm font-semibold text-indigo-700 mb-2">测试策略</p>
-                <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ designText || '等待策略输出...' }}</pre>
-              </div>
+        <div v-if="selectedStage === 'analysis'" class="space-y-4">
+          <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+            <p class="text-sm font-semibold text-blue-700 mb-2">需求分析</p>
+            <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ analysisText || '等待分析结果...' }}</pre>
+          </div>
+          <div class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+            <p class="text-sm font-semibold text-indigo-700 mb-2">测试策略</p>
+            <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ designText || '等待策略输出...' }}</pre>
+          </div>
+        </div>
+
+        <div v-if="selectedStage === 'generation'" class="space-y-4">
+          <div class="flex items-center justify-between bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
+            <span class="text-sm text-slate-600">已生成测试用例</span>
+            <span class="text-xl font-bold text-slate-800">{{ cases.length }}</span>
+          </div>
+          <div class="rounded-xl border border-purple-100 bg-purple-50/40 p-4">
+            <p class="text-sm font-semibold text-purple-700 mb-2">用例预览（前 5 条）</p>
+            <ul v-if="cases.length" class="space-y-2">
+              <li v-for="item in cases.slice(0, 5)" :key="item.id" class="text-sm text-slate-700">
+                {{ item.id }}. {{ item.title }}
+              </li>
+            </ul>
+            <p v-else class="text-sm text-slate-500">等待用例生成中...</p>
+          </div>
+        </div>
+
+        <div v-if="selectedStage === 'review'" class="space-y-4">
+          <div class="flex items-center gap-4 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+            <div class="text-center min-w-[80px]">
+              <div class="text-3xl font-black" :class="scoreColor">{{ review.quality_score ?? '--' }}</div>
+              <div class="text-xs text-gray-500">质量评分</div>
             </div>
-
-            <div v-if="stage.key === 'generation'" class="space-y-4">
-              <div class="flex items-center justify-between bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
-                <span class="text-sm text-slate-600">已生成测试用例</span>
-                <span class="text-xl font-bold text-slate-800">{{ cases.length }}</span>
-              </div>
-              <div class="rounded-xl border border-purple-100 bg-purple-50/40 p-4">
-                <p class="text-sm font-semibold text-purple-700 mb-2">用例预览（前 5 条）</p>
-                <ul v-if="cases.length" class="space-y-2">
-                  <li v-for="item in cases.slice(0, 5)" :key="item.id" class="text-sm text-slate-700">
-                    {{ item.id }}. {{ item.title }}
-                  </li>
-                </ul>
-                <p v-else class="text-sm text-slate-500">等待用例生成中...</p>
-              </div>
+            <div class="flex-1">
+              <el-progress :percentage="review.quality_score ?? 0" :color="scoreProgressColor" :stroke-width="8" />
+              <p class="text-sm text-slate-600 mt-2">{{ review.summary || '等待评审结果...' }}</p>
             </div>
+          </div>
 
-            <div v-if="stage.key === 'review'" class="space-y-4">
-              <div class="flex items-center gap-4 rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
-                <div class="text-center min-w-[80px]">
-                  <div class="text-3xl font-black" :class="scoreColor">{{ review.quality_score ?? '--' }}</div>
-                  <div class="text-xs text-gray-500">质量评分</div>
-                </div>
-                <div class="flex-1">
-                  <el-progress :percentage="review.quality_score ?? 0" :color="scoreProgressColor" :stroke-width="8" />
-                  <p class="text-sm text-slate-600 mt-2">{{ review.summary || '等待评审结果...' }}</p>
-                </div>
-              </div>
-
-              <div v-if="review.issues?.length" class="rounded-xl border border-red-100 bg-red-50/40 p-4">
-                <p class="text-sm font-semibold text-red-700 mb-2">发现问题（{{ review.issues.length }}）</p>
-                <ul class="space-y-2">
-                  <li v-for="(issue, i) in review.issues" :key="i" class="text-sm text-slate-700">• {{ issue }}</li>
-                </ul>
-              </div>
-            </div>
+          <div v-if="review.issues?.length" class="rounded-xl border border-red-100 bg-red-50/40 p-4">
+            <p class="text-sm font-semibold text-red-700 mb-2">发现问题（{{ review.issues.length }}）</p>
+            <ul class="space-y-2">
+              <li v-for="(issue, i) in review.issues" :key="i" class="text-sm text-slate-700">• {{ issue }}</li>
+            </ul>
           </div>
         </div>
       </div>
@@ -193,7 +202,7 @@ const taskId = route.params.id as string
 
 const activeTab = ref('cases')
 const exporting = ref({ excel: false, xmind: false, ms: false })
-const expandedStages = ref<PhaseKey[]>(['analysis'])
+const selectedStage = ref<PhaseKey>('analysis')
 
 const task = ref<any>({
   id: taskId,
@@ -272,6 +281,14 @@ const orderedStages = computed(() => {
     phase: phases[key] ?? { status: 'pending', label: stageMeta[key].title, data: null }
   }))
 })
+const selectedStageData = computed(() => {
+  return orderedStages.value.find((item) => item.key === selectedStage.value) ?? orderedStages.value[0]
+})
+const timelineProgressWidth = computed(() => {
+  const done = orderedStages.value.filter((s) => s.phase.status === 'completed').length
+  const running = orderedStages.value.some((s) => s.phase.status === 'running') ? 0.5 : 0
+  return `${Math.round(((done + running) / orderedStages.value.length) * 100)}%`
+})
 
 const cases = computed<any[]>(() => task.value.phases?.generation?.data?.cases ?? [])
 const analysisText = computed(() => task.value.phases?.analysis?.data?.analysis ?? '')
@@ -325,26 +342,16 @@ const scoreProgressColor = computed(() => {
 
 function syncExpandedStage() {
   const current = orderedStages.value.find((s) => s.phase.status === 'running')
-  if (current && !expandedStages.value.includes(current.key)) {
-    expandedStages.value = [current.key]
+  if (current) {
+    selectedStage.value = current.key
     return
   }
 
   if (task.value.status === 'completed') {
-    expandedStages.value = ['review']
+    selectedStage.value = 'review'
+    return
   }
-}
-
-function toggleStage(key: PhaseKey) {
-  if (isExpanded(key)) {
-    expandedStages.value = expandedStages.value.filter((k) => k !== key)
-  } else {
-    expandedStages.value = [key]
-  }
-}
-
-function isExpanded(key: PhaseKey) {
-  return expandedStages.value.includes(key)
+  selectedStage.value = 'analysis'
 }
 
 function stageProgress(status: string) {
@@ -376,12 +383,6 @@ function stageHint(stage: any) {
   }
 }
 
-function stageHeaderClass(stage: any) {
-  if (stage.index === 1) return 'bg-gradient-to-r from-blue-600 to-blue-500'
-  if (stage.index === 2) return 'bg-gradient-to-r from-violet-600 to-purple-500'
-  return 'bg-gradient-to-r from-emerald-600 to-green-500'
-}
-
 function stageContainerClass(stage: any) {
   return stage.phase.status === 'failed'
     ? 'border-red-200'
@@ -390,17 +391,27 @@ function stageContainerClass(stage: any) {
       : 'border-slate-200'
 }
 
-function stageBodyBorderClass(stage: any) {
-  if (stage.index === 1) return 'border-blue-100'
-  if (stage.index === 2) return 'border-purple-100'
-  return 'border-emerald-100'
-}
-
 function stageProgressColorClass(stage: any) {
   if (stage.phase.status === 'failed') return 'bg-red-500'
   if (stage.index === 1) return 'bg-blue-500'
   if (stage.index === 2) return 'bg-purple-500'
   return 'bg-emerald-500'
+}
+
+function stageDotClass(stage: any) {
+  if (stage.phase.status === 'failed') return 'bg-red-500 border-red-500 text-white'
+  if (stage.phase.status === 'completed') return 'bg-emerald-500 border-emerald-500 text-white'
+  if (stage.phase.status === 'running') return 'bg-indigo-500 border-indigo-500 text-white'
+  return selectedStage.value === stage.key
+    ? 'bg-indigo-50 border-indigo-500 text-indigo-600'
+    : 'bg-white border-slate-300 text-slate-500'
+}
+
+function stageTextClass(status: string) {
+  if (status === 'failed') return 'text-red-500'
+  if (status === 'completed') return 'text-emerald-600'
+  if (status === 'running') return 'text-indigo-600'
+  return 'text-slate-400'
 }
 
 async function exportExcel() {

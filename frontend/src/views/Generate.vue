@@ -134,6 +134,7 @@ const submit = async () => {
   try {
     const formData = new FormData()
     formData.append('source_type', genForm.sourceType)
+    formData.append('submitter', localStorage.getItem('username') || 'admin')
     if (genForm.sourceType !== 'local') {
       formData.append('doc_url', genForm.docUrl)
     } else {
@@ -151,8 +152,8 @@ const submit = async () => {
       }
     )
 
-    if (response.data.status === 'success') {
-      const taskId = response.data.task_id
+    if (response.data.code === 0) {
+      const taskId = response.data?.data?.task_id
       const sourceLabel = genForm.sourceType === 'feishu'
         ? '飞书文档'
         : genForm.sourceType === 'dingtalk'
@@ -169,7 +170,7 @@ const submit = async () => {
       router.push(`/task/${taskId}`)
     }
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '提交失败，请重试')
+    ElMessage.error(error.response?.data?.msg || error.response?.data?.detail || '提交失败，请重试')
   } finally {
     isSubmitting.value = false
   }

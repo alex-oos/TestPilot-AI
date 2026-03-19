@@ -18,12 +18,23 @@ from app.core import database
 _tasks: Dict[str, Dict[str, Any]] = {}
 
 
-def create_task(source_type: Optional[str] = None, doc_url: Optional[str] = None, user_id: Optional[int] = None) -> str:
+def create_task(
+    task_name: Optional[str] = None,
+    source_type: Optional[str] = None,
+    doc_url: Optional[str] = None,
+    user_id: Optional[int] = None,
+    submitter: Optional[str] = None,
+) -> str:
     """Create a new task, persist it in DB, and return task_id."""
     task_id = str(uuid.uuid4())
+    if submitter and not user_id:
+        user = database.ensure_user(submitter)
+        user_id = user.get("id")
+
     initial_status_text = "本地文件分析中" if source_type == "local" else "需求文档解析中"
     database.create_task_record(
         task_id,
+        task_name=task_name,
         source_type=source_type,
         doc_url=doc_url,
         status="running",
@@ -73,8 +84,24 @@ def set_task_mindmap(task_id: str, mindmap: str):
         _tasks[task_id] = task
 
 
-def list_tasks(limit: int = 50):
-    return database.list_tasks(limit=limit)
+def list_tasks(
+    page: int = 1,
+    page_size: int = 10,
+    task_name: Optional[str] = None,
+    task_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    status: Optional[str] = None,
+    submitter: Optional[str] = None,
+):
+    return database.list_tasks(
+        page=page,
+        page_size=page_size,
+        task_name=task_name,
+        task_id=task_id,
+        source_type=source_type,
+        status=status,
+        submitter=submitter,
+    )
 
 
 async def stream_task_events(task_id: str) -> AsyncGenerator[str, None]:
