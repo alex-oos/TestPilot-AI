@@ -203,53 +203,67 @@
                 <span class="ml-2 text-sm font-normal text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">共 {{ cases.length }} 条</span>
               </h3>
               <div class="flex gap-2">
+                <el-button 
+                  size="small" 
+                  :type="viewMode === 'table' ? 'primary' : ''" 
+                  @click="viewMode = 'table'" 
+                  class="!rounded-lg"
+                >
+                  📊 表格视图
+                </el-button>
+                <el-button 
+                  size="small" 
+                  :type="viewMode === 'mindmap' ? 'primary' : ''" 
+                  @click="viewMode = 'mindmap'" 
+                  class="!rounded-lg"
+                >
+                  🗺️ 思维导图
+                </el-button>
+                <el-divider direction="vertical" />
                 <el-button size="small" @click="exportExcel" :loading="exporting.excel" class="!rounded-lg">📊 导出 Excel</el-button>
                 <el-button size="small" @click="exportXmind" :loading="exporting.xmind" class="!rounded-lg">🗺️ 导出 XMind</el-button>
                 <el-button size="small" type="primary" @click="syncMs" :loading="exporting.ms" class="!rounded-lg">🔗 同步 MS</el-button>
               </div>
             </div>
 
-            <el-table :data="cases" border style="width: 100%;" :header-cell-style="{ background: '#f8fafc', color: '#475569', fontWeight: '600' }">
-              <el-table-column prop="id" label="编号" width="70" align="center" />
-              <el-table-column prop="module" label="模块" width="120" />
-              <el-table-column prop="title" label="用例标题" width="200" />
-              <el-table-column prop="precondition" label="前置条件" width="130" />
-              <el-table-column prop="steps" label="测试步骤">
-                <template #default="scope">
-                  <pre class="font-sans whitespace-pre-wrap text-sm text-gray-600 m-0">{{ scope.row.steps }}</pre>
-                </template>
-              </el-table-column>
-              <el-table-column prop="expected_result" label="预期结果" />
-              <el-table-column prop="priority" label="优先级" width="85" align="center">
-                <template #default="scope">
-                  <el-tag :type="scope.row.priority === '高' ? 'danger' : scope.row.priority === '低' ? 'success' : 'warning'" effect="light" round size="small">
-                    {{ scope.row.priority }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="100" align="center">
-                <template #default="scope">
-                  <el-tag :type="scope.row.adoption_status === 'rejected' ? 'danger' : 'success'" effect="light" round size="small">
-                    {{ scope.row.adoption_status === 'rejected' ? '不采纳' : '采纳' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-            </el-table>
+            <!-- 表格视图 -->
+            <div v-if="viewMode === 'table'">
+              <el-table :data="cases" border style="width: 100%;" :header-cell-style="{ background: '#f8fafc', color: '#475569', fontWeight: '600' }">
+                <el-table-column prop="id" label="编号" width="70" align="center" />
+                <el-table-column prop="module" label="模块" width="120" />
+                <el-table-column prop="title" label="用例标题" width="200" />
+                <el-table-column prop="precondition" label="前置条件" width="130" />
+                <el-table-column prop="steps" label="测试步骤">
+                  <template #default="scope">
+                    <pre class="font-sans whitespace-pre-wrap text-sm text-gray-600 m-0">{{ scope.row.steps }}</pre>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="expected_result" label="预期结果" />
+                <el-table-column prop="priority" label="优先级" width="85" align="center">
+                  <template #default="scope">
+                    <el-tag :type="scope.row.priority === '高' ? 'danger' : scope.row.priority === '低' ? 'success' : 'warning'" effect="light" round size="small">
+                      {{ scope.row.priority }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="100" align="center">
+                  <template #default="scope">
+                    <el-tag :type="scope.row.adoption_status === 'rejected' ? 'danger' : 'success'" effect="light" round size="small">
+                      {{ scope.row.adoption_status === 'rejected' ? '不采纳' : '采纳' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- 思维导图视图 -->
+            <div v-else-if="viewMode === 'mindmap'" style="min-height: 600px;">
+              <MindMap :data="mindMapData" />
+            </div>
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="🗺️ 思维导图" name="mindmap">
-          <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mt-4">
-            <div class="bg-slate-900 rounded-xl p-6 overflow-auto max-h-[600px]">
-              <pre class="text-green-400 text-sm font-mono whitespace-pre-wrap">{{ task.mindmap }}</pre>
-            </div>
-            <p class="text-xs text-gray-400 mt-3 text-center">
-              复制上方内容，粘贴到
-              <a href="https://markmap.js.org/repl" target="_blank" class="text-indigo-500 underline">Markmap REPL</a>
-              可查看交互式思维导图
-            </p>
-          </div>
-        </el-tab-pane>
+
       </el-tabs>
     </div>
 
@@ -263,11 +277,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
 import { updateTaskStatusInHistory } from '../utils/taskHistory'
+import MindMap from '../components/MindMap.vue'
 
 type PhaseKey = 'analysis' | 'generation' | 'review'
 
@@ -276,6 +291,7 @@ const router = useRouter()
 const taskId = route.params.id as string
 
 const activeTab = ref('cases')
+const viewMode = ref<'table' | 'mindmap'>('table')
 const exporting = ref({ excel: false, xmind: false, ms: false })
 const selectedStage = ref<PhaseKey>('analysis')
 const reviewEditableCases = ref<any[]>([])
@@ -684,6 +700,42 @@ function downloadBlob(data: Blob, filename: string) {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// 从后端接口获取思维导图数据
+const mindMapData = ref<any>(null)
+
+async function fetchMindMapData() {
+  try {
+    const resp = await axios.get(`/api/tasks/${taskId}/mindmap-data`)
+    if (resp.data?.data?.root) {
+      mindMapData.value = resp.data.data.root
+      console.log('[思维导图] 数据加载成功')
+    }
+  } catch (error) {
+    console.error('[思维导图] 获取数据失败:', error)
+  }
+}
+
+// 在任务完成后加载思维导图数据
+watch(
+  () => task.value.status,
+  (newStatus) => {
+    if (['completed', 'waiting_decision'].includes(newStatus)) {
+      setTimeout(() => fetchMindMapData(), 500)
+    }
+  },
+  { immediate: false }
+)
+
+// 监听 viewMode 变化，当切换到思维导图时加载数据
+watch(
+  () => viewMode.value,
+  (newMode) => {
+    if (newMode === 'mindmap' && !mindMapData.value) {
+      fetchMindMapData()
+    }
+  }
+)
 </script>
 
 <style scoped>

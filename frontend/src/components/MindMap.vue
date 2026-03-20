@@ -1,24 +1,21 @@
 <template>
-  <div class="mindmap-container">
-    <div class="mindmap-header">
-      <h2 class="mindmap-title">测试用例思维导图</h2>
-      <div class="mindmap-actions">
-        <el-button size="small" @click="zoomIn">🔍 放大</el-button>
-        <el-button size="small" @click="zoomOut">🔎 缩小</el-button>
-        <el-button size="small" @click="fitView">📐 适应屏幕</el-button>
-      </div>
+  <div class="mindmap-wrapper">
+    <div class="mindmap-toolbar">
+      <el-button size="small" @click="zoomIn">🔍 放大</el-button>
+      <el-button size="small" @click="zoomOut">🔎 缩小</el-button>
+      <el-button size="small" @click="fit">适应屏幕</el-button>
+      <el-button size="small" @click="exportXmind">📥 导出 XMind</el-button>
     </div>
-    <div ref="mindmapRef" class="mindmap-content"></div>
+    <div ref="mindmapContainer" class="mindmap-container"></div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
-import { Transformer } from 'markmap-lib'
-import { Markmap, loadCSS, loadJS } from 'markmap-view'
-import type { IMarkmapOptions } from 'markmap-common'
+import { ref, onUnmounted, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import MindMap from 'simple-mind-map'
 
-interface MindMapNode {
+export interface MindMapNode {
   content: string
   children?: MindMapNode[]
   payload?: {
@@ -34,172 +31,150 @@ const props = defineProps<{
   data: MindMapNode | null
 }>()
 
-const mindmapRef = ref<HTMLElement | null>(null)
-let markmap: Markmap | null = null
-const transformer = new Transformer()
+const mindmapContainer = ref<HTMLElement | null>(null)
+let mindMapInstance: any = null
 
-const zoomIn = () => {
-  if (markmap) {
-    const scale = markmap.state.scale * 1.2
-    markmap.setScale(scale)
-  }
-}
-
-const zoomOut = () => {
-  if (markmap) {
-    const scale = markmap.state.scale * 0.8
-    markmap.setScale(scale)
-  }
-}
-
-const fitView = () => {
-  if (markmap) {
-    markmap.fit()
-  }
-}
-
-const renderMindMap = (data: MindMapNode | null) => {
-  if (!data || !mindmapRef.value) return
-  
-  const markdown = convertToMarkdown(data)
-  const { root, features } = transformer.transform(markdown)
-  
-  const options: IMarkmapOptions = {
-    autoFit: true,
-    duration: 500,
-    paddingX: 50,
-    spacingHorizontal: 80,
-    spacingVertical: 10,
-    maxWidth: 0,
-    max_width: 0,
-    initialExpandLevel: 2,
-    color: (node: any) => {
-      const depth = node.depth || 0
-      const colors = ['#4f46e5', '#7c3aed', '#db2777', '#ea580c', '#059669']
-      return colors[depth % colors.length]
+// 转换数据格式
+const convertData = (node: MindMapNode): any => {
+  return {
+    data: {
+      text: node.content,
+      ...node.payload
     },
-    nodeMinRadius: 10,
-    nodeMaxRadius: 30,
-  }
-
-  if (markmap) {
-    markmap.setData(root)
-  } else {
-    markmap = Markmap.create(mindmapRef.value, options, root)
-  }
-  
-  if (features.styles?.length) {
-    loadCSS(features.styles)
-  }
-  if (features.scripts?.length) {
-    loadJS(features.scripts, { getAsync: true })
+    children: node.children ? node.children.map(child => convertData(child)) : []
   }
 }
 
-const convertToMarkdown = (node: MindMapNode, level = 0): string => {
-  let markdown = ''
-  const prefix = '#'.repeat(level + 1) + ' '
+// 初始化思维导图
+const initMindMap = () => {
+  if (!props.data || !mindmapContainer.value) return
   
-  let content = node.content
-  if (node.payload) {
-    const extras = []
-    if (node.payload.priority) extras.push(`【优先级：${node.payload.priority}】`)
-    if (node.payload.type) extras.push(`类型：${node.payload.type}`)
-    if (node.payload.status) extras.push(`状态：${node.payload.status}`)
-    if (node.payload.description) extras.push(node.payload.description)
+  // 销毁旧实例
+  if (mindMapInstance) {
+    mindMapInstance.destroy()
+  }
+  
+  // 创建新实例
+  try {
+    mindMapInstance = new (MindMap as any)({
+      el: mindmapContainer.value,
+      data: convertData(props.data),
+      theme: 'avocado',
+      layout: 'logicalStructure',
+      fit: true,
+    })
     
-    if (extras.length > 0) {
-      content += ` - ${extras.join(' | ')}`
-    }
+    console.log('[MindMap] 实例创建成功')
+  } catch (error) {
+    console.error('[MindMap] 实例创建失败:', error)
+    ElMessage.error('思维导图加载失败')
   }
-  
-  markdown += `${prefix}${content}\n\n`
-  
-  if (node.children && node.children.length > 0) {
-    for (const child of node.children) {
-      markdown += convertToMarkdown(child, level + 1)
-    }
-  }
-  
-  return markdown
 }
 
-watch(() => props.data, (newData) => {
-  if (newData) {
-    setTimeout(() => renderMindMap(newData), 100)
+// 放大
+const zoomIn = () => {
+  if (!mindMapInstance) {
+    ElMessage.warning('思维导图还未加载')
+    return
   }
-}, { immediate: true, deep: true })
+  const scale = mindMapInstance.view.getScale()
+  mindMapInstance.view.setTransform(null, null, scale + 0.2)
+  ElMessage.success('已放大')
+}
 
-onMounted(() => {
-  if (props.data) {
-    renderMindMap(props.data)
+// 缩小
+const zoomOut = () => {
+  if (!mindMapInstance) {
+    ElMessage.warning('思维导图还未加载')
+    return
+  }
+  const scale = mindMapInstance.view.getScale()
+  const newScale = Math.max(0.1, scale - 0.2)
+  mindMapInstance.view.setTransform(null, null, newScale)
+  ElMessage.success('已缩小')
+}
+
+// 适应屏幕
+const fit = () => {
+  if (!mindMapInstance) {
+    ElMessage.warning('思维导图还未加载')
+    return
+  }
+  mindMapInstance.fit()
+  ElMessage.success('已适应屏幕')
+}
+
+// 导出 XMind
+const exportXmind = () => {
+  if (!mindMapInstance) {
+    ElMessage.warning('思维导图还未加载')
+    return
+  }
+  try {
+    ElMessage.info('正在生成 XMind 文件...')
+    mindMapInstance.export('xmind', '测试用例')
+    ElMessage.success('XMind 文件已生成')
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出 XMind 失败')
+  }
+}
+
+// 监听数据变化
+watch(() => props.data, (newData) => {
+  console.log('[MindMap] 数据变化:', newData ? '有数据' : '无数据')
+  if (newData && mindmapContainer.value) {
+    // 等待 DOM 更新后再初始化
+    setTimeout(() => {
+      initMindMap()
+    }, 100)
+  }
+}, { immediate: false })
+
+// 组件挂载时如果有数据则初始化
+watch(
+  () => ({ data: props.data, container: mindmapContainer.value }),
+  ({ data, container }) => {
+    if (data && container && !mindMapInstance) {
+      setTimeout(() => {
+        initMindMap()
+      }, 200)
+    }
+  },
+  { immediate: true }
+)
+
+// 组件卸载时清理
+onUnmounted(() => {
+  if (mindMapInstance) {
+    mindMapInstance.destroy()
+    mindMapInstance = null
   }
 })
 </script>
 
 <style scoped>
-.mindmap-container {
+.mindmap-wrapper {
   width: 100%;
   height: 100%;
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-.mindmap-header {
-  padding: 16px 24px;
+.mindmap-toolbar {
+  padding: 12px;
+  background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-}
-
-.mindmap-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #1e293b;
-  margin: 0;
-}
-
-.mindmap-actions {
-  display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-.mindmap-content {
+.mindmap-container {
   flex: 1;
-  min-height: 500px;
-  position: relative;
-}
-
-:deep(.markmap) {
   width: 100%;
-  height: 100%;
-}
-
-:deep(.markmap-node) {
-  cursor: pointer;
-}
-
-:deep(.markmap-node:hover > .markmap-foreign-object) {
-  filter: brightness(0.95);
-}
-
-:deep(.markmap-foreign-object) {
-  transition: all 0.2s ease;
-}
-
-:deep(.markmap-foreign-object rect) {
-  rx: 8;
-  ry: 8;
-  stroke-width: 2;
-}
-
-:deep(.markmap-link) {
-  stroke-width: 2;
+  min-height: 600px;
+  background: #ffffff;
+  overflow: hidden;
 }
 </style>

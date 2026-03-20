@@ -263,3 +263,93 @@ async def sync_to_ms(request: Request, payload: SyncRequest):
     """同步测试用例到 MS 测试管理平台"""
     result = await generation_service.sync_to_ms(payload.cases)
     return success(result, request.state.tid)
+
+
+@router.get("/tasks/{task_id}/mindmap-data")
+async def get_task_mindmap_data(request: Request, task_id: str):
+    """获取任务的思维导图树形结构数据"""
+    from app.services import task_manager
+    from typing import List, Dict, Any
+    
+    # 获取任务详情
+    task = await task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    # 从 generation 阶段获取测试用例
+    generation_data = task.get('phases', {}).get('generation', {}).get('data', {})
+    cases = generation_data.get('cases', []) if isinstance(generation_data, dict) else []
+    
+    if not cases:
+        return success({"root": None}, request.state.tid)
+    
+    # 构建树形结构
+    root_node = {
+        "content": "测试用例",
+        "children": []
+    }
+    
+    # 按模块分组
+    module_map: Dict[str, List[Dict[str, Any]]] = {}
+    for case in cases:
+        module_name = case.get('module', '其他模块')
+        if module_name not in module_map:
+            module_map[module_name] = []
+        module_map[module_name].append(case)
+    
+    # 构建模块和用例节点
+    for module_name, module_cases in module_map.items():
+        module_node = {
+            "content": module_name,
+            "children": [],
+            "payload": {
+                "type": "module",
+                "count": len(module_cases)
+            }
+        }
+        
+        # 为每个用例创建子节点
+        for case in module_cases:
+            case_node = {
+                "content": f"{case.get('id', '')}. {case.get('title', '')}",
+                "children": [],
+                "payload": {
+                    "id": case.get('id'),
+                    "type": "test_case",
+                    "priority": case.get('priority', '中'),
+                    "description": case.get('precondition', ''),
+                    "status": case.get('adoption_status', 'accepted')
+                }
+            }
+            
+            # 添加测试步骤
+            if case.get('steps'):
+                case_node["children"].append({
+                    "content": "测试步骤",
+                    "payload": {"type": "steps"},
+                    "children": [
+                        {
+                            "content": case.get('steps'),
+                            "payload": {"type": "step_detail"}
+                        }
+                    ]
+                })
+            
+            # 添加预期结果
+            if case.get('expected_result'):
+                case_node["children"].append({
+                    "content": "预期结果",
+                    "payload": {"type": "expected_result"},
+                    "children": [
+                        {
+                            "content": case.get('expected_result'),
+                            "payload": {"type": "result_detail"}
+                        }
+                    ]
+                })
+            
+            module_node["children"].append(case_node)
+        
+        root_node["children"].append(module_node)
+    
+    return success({"root": root_node}, request.state.tid)
