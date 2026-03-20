@@ -58,15 +58,15 @@ start_backend() {
     return
   fi
 
-  if [[ ! -x "$BACKEND_DIR/venv/bin/python" ]]; then
-    echo "[start-all] ERROR: backend Python env not found at $BACKEND_DIR/venv/bin/python"
+  if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+    echo "[start-all] ERROR: backend Python env not found at $BACKEND_DIR/.venv/bin/python"
     exit 1
   fi
 
   echo "[start-all] Starting backend on :$BACKEND_PORT ..."
   (
     cd "$BACKEND_DIR"
-    nohup ./venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload >"$BACKEND_LOG" 2>&1 < /dev/null &
+    nohup ./.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload >"$BACKEND_LOG" 2>&1 < /dev/null &
     local launched_pid=$!
     disown "$launched_pid" 2>/dev/null || true
   )

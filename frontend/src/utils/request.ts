@@ -4,7 +4,7 @@ const normalizeBase = (base: string) => (base || '').replace(/\/$/, '')
 
 export const DEFAULT_API_BASE = '/api'
 export const DIRECT_BACKEND_API_BASE = normalizeBase(
-  import.meta.env.VITE_DIRECT_BACKEND_API_BASE || 'http://127.0.0.1:8001/api'
+  import.meta.env.VITE_DIRECT_BACKEND_API_BASE || 'http://127.0.0.1:8000/api'
 )
 export const API_BASE_URL = normalizeBase(import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE)
 

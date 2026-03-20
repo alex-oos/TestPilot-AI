@@ -24,9 +24,9 @@
    ```
 2. 创建并激活虚拟环境（推荐）：
    ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # MacOS/Linux
-   # 或者是 Windows系统: venv\Scripts\activate
+   python3 -m venv .venv
+   source .venv/bin/activate  # MacOS/Linux
+   # 或者是 Windows系统: .venv\Scripts\activate
    ```
 3. 安装依赖：
    ```bash
@@ -46,18 +46,20 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 前端利用 Vite 提供极速的构建和热更新体验。
 
 #### 环境准备
-请确保您的系统中已安装 Node.js (推荐 v18+)。
+请确保您的系统中已安装 Node.js (推荐 v22+)。
+请确保您的系统中已安装 Python  (推荐 3.13)。
 
 #### 安装依赖
 1. 进入前端目录：
    ```bash
-   cd frontend
+   cd frontend/
    ```
 2. 安装 NPM 依赖：
    ```bash
    npm install
    # 如果在安装 tailwindcss 等核心包时遇到依赖冲突，可以执行:
    # npm install --legacy-peer-deps
+   # npm 如何安装失败，采用cnpm install 可以
    ```
 
 #### 启动服务
