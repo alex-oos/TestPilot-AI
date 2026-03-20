@@ -26,7 +26,7 @@ backend/ENV/
 backend/env.bak/
 backend/venv.bak/
 backend/data/
-
+backend/data/app.db
 # Logs
 logs/
 *.log

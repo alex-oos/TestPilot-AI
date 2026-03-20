@@ -96,6 +96,43 @@ def _extract_json_array_text(text: str) -> str:
     return value[start:end + 1]
 
 
+def _extract_first_json_value_text(text: str) -> str:
+    value = _strip_code_fence(text)
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(value):
+        if ch not in "[{":
+            continue
+        try:
+            _, end = decoder.raw_decode(value[i:])
+            return value[i:i + end]
+        except Exception:
+            continue
+    raise ValueError("未找到可解析的 JSON 内容")
+
+
+def _extract_cases_payload(data: Any) -> Any:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("test_cases", "cases", "items", "data", "result"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return data
+
+
+def _parse_cases_payload(text: str) -> List[Dict[str, Any]]:
+    # 1) 直接按数组解析（最快）
+    try:
+        return _normalize_cases(json.loads(_extract_json_array_text(text)))
+    except Exception:
+        pass
+
+    # 2) 解析首个 JSON 值（可能是对象包裹数组）
+    payload = json.loads(_extract_first_json_value_text(text))
+    return _normalize_cases(_extract_cases_payload(payload))
+
+
 def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
     if not isinstance(cases, list):
         raise ValueError("LLM 返回内容不是数组")
@@ -135,6 +172,18 @@ def _normalize_role(role: str) -> str:
     if value in {"review", "用例评审", "用例评审角色"}:
         return "review"
     return value
+
+
+def _is_llm_error_text(text: str) -> bool:
+    if not isinstance(text, str):
+        return True
+    return text.strip().lower().startswith("error:")
+
+
+def _raise_if_llm_error(text: str, stage: str) -> None:
+    if _is_llm_error_text(text):
+        detail = (text or "").strip()
+        raise RuntimeError(f"{stage}模型调用失败：{detail}")
 
 
 def _pick_role_model_options(cfg: Dict[str, Any], role: str) -> Dict[str, Any]:
@@ -228,6 +277,7 @@ async def analyze_requirements(text_content: str) -> str:
         max_tokens=role_cfg.get("max_tokens"),
         top_p=role_cfg.get("top_p"),
     )
+    _raise_if_llm_error(analysis_result, "需求分析")
     logger.success("Requirement Analysis completed.")
     return analysis_result
 
@@ -252,6 +302,7 @@ async def design_test_strategy(analysis_result: str) -> str:
         max_tokens=role_cfg.get("max_tokens"),
         top_p=role_cfg.get("top_p"),
     )
+    _raise_if_llm_error(design_result, "测试策略")
     logger.success("Test Design completed.")
     return design_result
 
@@ -276,9 +327,10 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
         max_tokens=role_cfg.get("max_tokens"),
         top_p=role_cfg.get("top_p"),
     )
+    _raise_if_llm_error(cases_json_str, "测试用例生成")
     
     try:
-        cases = _normalize_cases(json.loads(_extract_json_array_text(cases_json_str)))
+        cases = _parse_cases_payload(cases_json_str)
     except Exception as parse_error:
         logger.warning(f"Test cases JSON parse failed, trying repair once: {parse_error}")
         repair_messages = [
@@ -286,7 +338,8 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
                 "role": "system",
                 "content": (
                     "你是一个 JSON 修复助手。请将用户提供的内容修复为合法 JSON 数组。"
-                    "只返回 JSON 数组，不要任何解释。"
+                    "如果用户内容是 JSON 对象，请提取其中测试用例列表字段（test_cases/cases/items/data）"
+                    "并转换为 JSON 数组。只返回 JSON 数组，不要任何解释。"
                 ),
             },
             {"role": "user", "content": cases_json_str},
@@ -300,8 +353,9 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
             max_tokens=role_cfg.get("max_tokens"),
             top_p=role_cfg.get("top_p"),
         )
+        _raise_if_llm_error(repaired, "测试用例修复")
         try:
-            cases = _normalize_cases(json.loads(_extract_json_array_text(repaired)))
+            cases = _parse_cases_payload(repaired)
         except Exception as repair_error:
             logger.error(
                 "Failed to parse test cases JSON after repair: {} | raw={} | repaired={}",
@@ -344,6 +398,7 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
         max_tokens=role_cfg.get("max_tokens"),
         top_p=role_cfg.get("top_p"),
     )
+    _raise_if_llm_error(review_str, "测试用例评审")
     
     # Clean up potential markdown wrapping
     review_str = review_str.strip()
