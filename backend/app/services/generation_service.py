@@ -19,21 +19,41 @@ from app.services.file_storage import read_uploaded_bytes
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-ALLOWED_UPLOAD_EXTENSIONS = {".md", ".txt", ".pdf", ".docx"}
+ALLOWED_UPLOAD_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf", ".docx", ".json", ".yaml", ".yml"}
+FILE_SIGNATURES = {
+    b"%PDF": ".pdf",
+    b"PK\x03\x04": ".docx",  # docx 是 zip 容器
+}
 
 
-def _validate_upload_for_stream(file_name: str, file_size: int) -> str:
+def _validate_file_type(file_content: bytes, file_name: str) -> str:
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
+
+    # 二进制文档增加魔数校验，文本类按扩展名放行
+    if ext in {".pdf", ".docx"}:
+        header = file_content[:8]
+        expected = None
+        for signature, detected_ext in FILE_SIGNATURES.items():
+            if header.startswith(signature):
+                expected = detected_ext
+                break
+        if expected != ext:
+            raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
+    return ext
+
+
+def _validate_upload_for_stream(file_name: str, file_size: int, file_content: bytes) -> str:
     ext = os.path.splitext(file_name or "")[1].lower()
     if file_size > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
-    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
-    return ext
+    return _validate_file_type(file_content, file_name)
 
 
 def _parse_text_from_uploaded_file(file_name: str, file_content: bytes) -> str:
     ext = os.path.splitext(file_name or "")[1].lower()
-    if ext in {".md", ".txt"}:
+    if ext in {".md", ".markdown", ".txt", ".json", ".yaml", ".yml"}:
         return file_content.decode("utf-8", errors="ignore").strip()
     if ext == ".docx":
         doc = docx.Document(io.BytesIO(file_content))
@@ -118,7 +138,7 @@ async def prepare_stream_generation_file(*, file: UploadFile) -> dict:
     if not file_content:
         raise HTTPException(status_code=400, detail="上传文件不能为空")
     file_name = file.filename or "upload.bin"
-    _validate_upload_for_stream(file_name=file_name, file_size=len(file_content))
+    _validate_upload_for_stream(file_name=file_name, file_size=len(file_content), file_content=file_content)
     file_id, file_path = save_uploaded_bytes(file_name, file_content)
     return {"file_id": file_id, "file_path": file_path, "file_name": file_name}
 
@@ -185,68 +205,6 @@ def _build_merged_input_from_file(
     return merged_input
 
 
-async def _run_stream_pipeline_task(
-    *,
-    task_id: str,
-    file_path: str,
-    file_name: str,
-    context: Optional[str],
-    requirements: Optional[str],
-) -> None:
-    current_phase = "analysis"
-    try:
-        merged_input = _build_merged_input_from_file(
-            file_path=file_path,
-            file_name=file_name,
-            context=context,
-            requirements=requirements,
-        )
-
-        await task_manager.set_task_status(task_id, "running", status_text="需求分析中")
-        await task_manager.update_phase(task_id, "analysis", "running", {"source_text": merged_input})
-
-        analysis = await analyze_requirements(merged_input)
-        design = await design_test_strategy(analysis)
-        await task_manager.update_phase(
-            task_id,
-            "analysis",
-            "completed",
-            {"source_text": merged_input, "analysis": analysis, "design": design},
-        )
-
-        current_phase = "generation"
-        await task_manager.set_task_status(task_id, "running", status_text="用例编写中")
-        await task_manager.update_phase(task_id, "generation", "running")
-        cases = await generate_test_cases(design)
-        await task_manager.update_phase(task_id, "generation", "completed", {"cases": cases})
-        await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(cases))
-
-        current_phase = "review"
-        await task_manager.set_task_status(task_id, "running", status_text="用例评审中")
-        await task_manager.update_phase(task_id, "review", "running")
-        review = await review_test_cases(cases, analysis)
-        await task_manager.update_phase(task_id, "review", "completed", {"review": review})
-
-        current_phase = "notify"
-        await task_manager.update_phase(
-            task_id,
-            "notify",
-            "completed",
-            {"channel": "none", "notified": False, "message": "流式任务未触发钉钉通知"},
-        )
-        await task_manager.set_task_status(task_id, "completed", status_text="任务执行完成")
-    except Exception as exc:
-        await task_manager.update_phase(task_id, current_phase, "failed", error=str(exc))
-        if current_phase == "analysis":
-            await task_manager.set_task_status(task_id, "analysis_failed", error=str(exc), status_text="需求分析异常")
-        elif current_phase == "generation":
-            await task_manager.set_task_status(task_id, "generation_failed", error=str(exc), status_text="用例编写异常")
-        elif current_phase == "review":
-            await task_manager.set_task_status(task_id, "review_failed", error=str(exc), status_text="用例评审异常")
-        else:
-            await task_manager.set_task_status(task_id, "failed", error=str(exc), status_text="执行异常")
-
-
 async def submit_stream_generation_task(
     *,
     background_tasks: BackgroundTasks,
@@ -282,12 +240,14 @@ async def submit_stream_generation_task(
     )
 
     background_tasks.add_task(
-        _run_stream_pipeline_task,
+        run_generation_pipeline,
         task_id=task_id,
-        file_path=prepared["file_path"],
+        source_type="local",
+        doc_url=None,
+        file_content=None,
         file_name=prepared["file_name"],
-        context=context,
-        requirements=requirements,
+        file_path=prepared["file_path"],
+        submitter=submitter,
     )
     return {"task_id": task_id, "task_status": "任务已入队"}
 
@@ -334,6 +294,12 @@ async def _create_uploaded_task(
     file_name: str,
     file_content: bytes,
 ) -> dict:
+    if source_type == "local":
+        _validate_upload_for_stream(
+            file_name=file_name,
+            file_size=len(file_content),
+            file_content=file_content,
+        )
     file_id, file_path = save_uploaded_bytes(file_name, file_content)
     final_task_name = (task_name or "").strip() or _default_task_name(source_type, file_name, doc_url)
 
@@ -567,22 +533,22 @@ async def apply_task_decision(
 
     await task_manager.update_phase(
         task_id,
-        "notify",
-        "completed",
+        "manual_review",
+        "running",
         {
-            "channel": "dingtalk",
             "decision_status": normalized,
             "decision_by": decision_by,
             "decision_note": decision_note,
+            "status": "人工审核中",
         },
     )
-    status_text = "用户已采纳测试用例" if normalized == "accepted" else "用户未采纳测试用例"
-    await task_manager.set_task_status(task_id, "completed", status_text=status_text)
+    status_text = "人工审核中（已记录采纳决策）"
+    await task_manager.set_task_status(task_id, "manual_reviewing", status_text=status_text)
     updated_task = await task_manager.get_task(task_id)
     return {
         "task_id": task_id,
         "decision_status": normalized,
-        "task_status": "completed",
+        "task_status": "manual_reviewing",
         "task": updated_task,
     }
 
@@ -652,6 +618,17 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
         decision_status=decision_status,
         decision_by="manual_review",
         decision_note=f"adopted={len(adopted_cases)}, rejected={rejected_count}",
+    )
+    await task_manager.update_phase(
+        task_id,
+        "manual_review",
+        "completed",
+        {
+            "reviewed_total": len(normalized_cases),
+            "adopted_count": len(adopted_cases),
+            "rejected_count": rejected_count,
+            "status": "人工审核完成",
+        },
     )
     await task_manager.set_task_status(task_id, "completed", status_text="任务已完成")
 

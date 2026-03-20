@@ -1,7 +1,7 @@
 """
 Task Manager - task state backed by SQLite + in-memory cache for SSE polling.
 Pipeline phases:
-  upload -> analysis -> generation -> review -> notify
+  upload -> analysis -> generation -> review -> manual_review
 """
 import asyncio
 import json
@@ -162,7 +162,6 @@ async def stream_task_events(task_id: str) -> AsyncGenerator[str, None]:
 
         if task["status"] in (
             "completed",
-            "waiting_decision",
             "analysis_failed",
             "generation_failed",
             "review_failed",

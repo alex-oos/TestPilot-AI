@@ -46,6 +46,7 @@ async def start_uploaded_task(
 
 
 @router.post("/tasks")
+@router.post("/tasks/create")
 async def submit_generation_task_stream(
     request: Request,
     background_tasks: BackgroundTasks,

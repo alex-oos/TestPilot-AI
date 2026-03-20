@@ -433,6 +433,10 @@
             <el-input v-model="currentNotifyConfig.secret" placeholder="请输入 Secret" />
           </el-form-item>
 
+          <el-form-item label="自定义关键词（可选）">
+            <el-input v-model="currentNotifyConfig.custom_keyword" placeholder="请输入自定义关键词（如：@all）" />
+          </el-form-item>
+
           <div class="pt-4 border-t border-slate-200 flex justify-end">
             <el-button type="primary" :loading="saving" @click="saveNotificationChannel(activeNotifyTab)">
               保存{{ notifyTabLabel(activeNotifyTab) }}配置
@@ -449,7 +453,24 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
-import axios from 'axios'
+import {
+  createAIModel,
+  createBehavior,
+  createPrompt,
+  deleteAIModel,
+  deleteBehavior,
+  deletePrompt,
+  editAIModel,
+  editBehavior,
+  editNotification,
+  editPrompt,
+  getAIModels,
+  getBehaviors,
+  getNotifications,
+  getPromptDefaults,
+  getPrompts,
+  testModelConnection,
+} from '../api/config-center'
 
 interface AIModelConfig {
   id: string
@@ -539,9 +560,9 @@ const form = reactive({
     review: '',
   },
   notifications: {
-    feishu: { name: '', enabled: false, webhook: '', secret: '' },
-    dingtalk: { name: '', enabled: false, webhook: '', secret: '' },
-    wecom: { name: '', enabled: false, webhook: '', secret: '' },
+    feishu: { name: '', enabled: false, webhook: '', secret: '', custom_keyword: '' },
+    dingtalk: { name: '', enabled: false, webhook: '', secret: '', custom_keyword: '' },
+    wecom: { name: '', enabled: false, webhook: '', secret: '', custom_keyword: '' },
   },
 })
 
@@ -701,16 +722,16 @@ async function fetchConfig() {
   loading.value = true
   try {
     if (activeSection.value === 'ai') {
-      const resp = await axios.get('/api/config-center/ai-models/list')
+      const resp = await getAIModels()
       applyAIConfig(resp.data?.data || {})
     } else if (activeSection.value === 'prompts') {
-      const resp = await axios.get('/api/config-center/prompts/list')
+      const resp = await getPrompts()
       applyPromptConfig(resp.data?.data || {})
     } else if (activeSection.value === 'behavior') {
-      const resp = await axios.get('/api/config-center/behavior/list')
+      const resp = await getBehaviors()
       applyBehaviorConfig(resp.data?.data || {})
     } else if (activeSection.value === 'notifications') {
-      const resp = await axios.get('/api/config-center/notifications/list')
+      const resp = await getNotifications()
       applyNotificationConfig(resp.data?.data || {})
     }
   } catch (e: any) {
@@ -810,7 +831,7 @@ function openEditAIDialog(item: AIModelConfig) {
 async function createAIConfigItem(record: AIModelConfig) {
   saving.value = true
   try {
-    const resp = await axios.post('/api/config-center/ai-models/create', record)
+    const resp = await createAIModel(record)
     applyAIConfig(resp.data?.data || {})
     ElMessage.success('AI 模型配置已保存')
   } catch (e: any) {
@@ -823,7 +844,7 @@ async function createAIConfigItem(record: AIModelConfig) {
 async function updateAIConfigItem(record: AIModelConfig) {
   saving.value = true
   try {
-    const resp = await axios.put('/api/config-center/ai-models/edit', record)
+    const resp = await editAIModel(record)
     applyAIConfig(resp.data?.data || {})
     ElMessage.success('AI 模型配置已保存')
   } catch (e: any) {
@@ -874,7 +895,7 @@ async function testCurrentAIDialogConnection() {
 
   aiTesting.value = true
   try {
-    await axios.post('/api/config-center/models/test', {
+    await testModelConnection({
       api_key: aiDialogForm.api_key || '',
       api_base_url: aiDialogForm.api_base_url,
       model_name: aiDialogForm.model_name,
@@ -900,7 +921,7 @@ async function removeAIConfig(item: AIModelConfig) {
 
   saving.value = true
   try {
-    const resp = await axios.delete(`/api/config-center/ai-models/delete/${encodeURIComponent(item.id)}`)
+    const resp = await deleteAIModel(item.id)
     applyAIConfig(resp.data?.data || {})
     ElMessage.success('AI 模型配置已删除')
   } catch (e: any) {
@@ -912,7 +933,7 @@ async function removeAIConfig(item: AIModelConfig) {
 
 async function testConnection(item: AIModelConfig) {
   try {
-    await axios.post('/api/config-center/models/test', {
+    await testModelConnection({
       api_key: item.api_key || '',
       api_base_url: item.api_base_url,
       model_name: item.model_name,
@@ -996,7 +1017,7 @@ function mapEnabledPromptByRole(list: PromptConfigItem[]) {
 async function createPromptConfigItem(record: PromptConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.post('/api/config-center/prompts/create', record)
+    const resp = await createPrompt(record)
     applyPromptConfig(resp.data?.data || {})
     ElMessage.success('提示词配置已保存')
   } catch (e: any) {
@@ -1009,7 +1030,7 @@ async function createPromptConfigItem(record: PromptConfigItem) {
 async function updatePromptConfigItem(record: PromptConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.put('/api/config-center/prompts/edit', record)
+    const resp = await editPrompt(record)
     applyPromptConfig(resp.data?.data || {})
     ElMessage.success('提示词配置已保存')
   } catch (e: any) {
@@ -1053,7 +1074,7 @@ async function removePromptConfig(item: PromptConfigItem) {
 
   saving.value = true
   try {
-    const resp = await axios.delete(`/api/config-center/prompts/delete/${encodeURIComponent(item.id)}`)
+    const resp = await deletePrompt(item.id)
     applyPromptConfig(resp.data?.data || {})
     ElMessage.success('提示词配置已删除')
   } catch (e: any) {
@@ -1065,7 +1086,7 @@ async function removePromptConfig(item: PromptConfigItem) {
 
 async function loadDefaultPrompts() {
   try {
-    const resp = await axios.get('/api/config-center/prompts/defaults')
+    const resp = await getPromptDefaults()
     const defaults = Array.isArray(resp.data?.data) ? resp.data.data : []
     if (!defaults.length) {
       ElMessage.warning('未获取到默认提示词')
@@ -1077,9 +1098,9 @@ async function loadDefaultPrompts() {
     }
     const promptConfigs = Array.isArray(payload.prompt_configs) ? payload.prompt_configs : []
     for (const item of promptConfigs) {
-      await axios.put('/api/config-center/prompts/edit', item)
+      await editPrompt(item)
     }
-    const result = await axios.get('/api/config-center/prompts/list')
+    const result = await getPrompts()
     applyPromptConfig(result.data?.data || {})
     ElMessage.success('默认提示词已加载')
   } catch (e: any) {
@@ -1119,7 +1140,7 @@ function openEditBehaviorDialog(item: GenerationBehaviorConfigItem) {
 async function createBehaviorConfigItem(record: GenerationBehaviorConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.post('/api/config-center/behavior/create', record)
+    const resp = await createBehavior(record)
     applyBehaviorConfig(resp.data?.data || {})
     ElMessage.success('生成行为配置已保存')
   } catch (e: any) {
@@ -1132,7 +1153,7 @@ async function createBehaviorConfigItem(record: GenerationBehaviorConfigItem) {
 async function updateBehaviorConfigItem(record: GenerationBehaviorConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.put('/api/config-center/behavior/edit', record)
+    const resp = await editBehavior(record)
     applyBehaviorConfig(resp.data?.data || {})
     ElMessage.success('生成行为配置已保存')
   } catch (e: any) {
@@ -1174,7 +1195,7 @@ async function removeBehaviorConfig(item: GenerationBehaviorConfigItem) {
 
   saving.value = true
   try {
-    const resp = await axios.delete(`/api/config-center/behavior/delete/${encodeURIComponent(item.id)}`)
+    const resp = await deleteBehavior(item.id)
     applyBehaviorConfig(resp.data?.data || {})
     ElMessage.success('生成行为配置已删除')
   } catch (e: any) {
@@ -1199,8 +1220,9 @@ async function saveNotificationChannel(tab: 'feishu' | 'wecom' | 'dingtalk') {
       enabled: current.enabled,
       webhook: current.webhook,
       secret: current.secret,
+      custom_keyword: current.custom_keyword,
     }
-    const resp = await axios.put(`/api/config-center/notifications/edit/${tab}`, payload)
+    const resp = await editNotification(tab, payload)
     applyNotificationConfig(resp.data?.data || {})
     ElMessage.success(`${notifyTabLabel(tab)}配置已保存`)
   } catch (e: any) {

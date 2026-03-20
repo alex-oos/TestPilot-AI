@@ -25,7 +25,7 @@
           <el-option label="排队中" value="queued" />
           <el-option label="待开始" value="pending" />
           <el-option label="执行中" value="running" />
-          <el-option label="待采纳确认" value="waiting_decision" />
+          <el-option label="人工审核中" value="manual_reviewing" />
           <el-option label="已完成" value="completed" />
           <el-option label="需求分析异常" value="analysis_failed" />
           <el-option label="用例编写异常" value="generation_failed" />
@@ -119,8 +119,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { batchDeleteTasks as batchDeleteTasksApi, deleteTaskById, listTasks, retryTask as retryTaskApi } from '../api/tasks'
 
 const router = useRouter()
 const loading = ref(false)
@@ -144,16 +144,14 @@ onMounted(() => {
 async function fetchTasks() {
   loading.value = true
   try {
-    const resp = await axios.get('/api/tasks', {
-      params: {
-        page: page.value,
-        page_size: pageSize.value,
-        task_name: query.taskName || undefined,
-        task_id: query.taskId || undefined,
-        source_type: query.sourceType || undefined,
-        status: query.status || undefined,
-        submitter: query.submitter || undefined,
-      }
+    const resp = await listTasks({
+      page: page.value,
+      page_size: pageSize.value,
+      task_name: query.taskName || undefined,
+      task_id: query.taskId || undefined,
+      source_type: query.sourceType || undefined,
+      status: query.status || undefined,
+      submitter: query.submitter || undefined,
     })
     const data = resp.data?.data || {}
     tasks.value = data.items || []
@@ -206,7 +204,7 @@ async function retryTask(row: any) {
   if (!confirmed) return
 
   try {
-    const resp = await axios.post(`/api/tasks/${row.id}/retries`)
+    const resp = await retryTaskApi(row.id)
     const sameTaskId = resp.data?.data?.task_id || row.id
     ElMessage.success('任务已重试')
     if (sameTaskId) {
@@ -232,7 +230,7 @@ async function deleteTask(row: any) {
   if (!confirmed) return
 
   try {
-    await axios.delete(`/api/tasks/${row.id}`)
+    await deleteTaskById(row.id)
     ElMessage.success('任务已删除')
     if (tasks.value.length === 1 && page.value > 1) {
       page.value -= 1
@@ -258,7 +256,7 @@ async function batchDeleteTasks() {
   if (!confirmed) return
 
   try {
-    await axios.delete('/api/tasks', { data: { task_ids: ids } })
+    await batchDeleteTasksApi(ids)
     ElMessage.success(`已删除 ${ids.length} 个任务`)
     if (tasks.value.length === ids.length && page.value > 1) {
       page.value -= 1
@@ -282,7 +280,7 @@ function statusLabel(status: string) {
     case 'queued': return '排队中'
     case 'pending': return '待开始'
     case 'running': return '执行中'
-    case 'waiting_decision': return '待采纳确认'
+    case 'manual_reviewing': return '人工审核中'
     case 'completed': return '已完成'
     case 'analysis_failed': return '需求分析异常'
     case 'generation_failed': return '用例编写异常'
@@ -299,7 +297,7 @@ function statusTagType(status: string) {
     case 'generation_failed': return 'danger'
     case 'review_failed': return 'danger'
     case 'failed': return 'danger'
-    case 'waiting_decision': return 'warning'
+    case 'manual_reviewing': return 'warning'
     case 'running': return 'warning'
     default: return 'info'
   }

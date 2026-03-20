@@ -96,12 +96,12 @@
                 :show-file-list="false"
                 :limit="1"
                 :on-exceed="() => ElMessage.warning('每次只能上传一个文件')"
-                accept=".pdf,.doc,.docx,.txt,.md,.markdown"
+                accept=".pdf,.docx,.txt,.md,.markdown,.json,.yaml,.yml"
               >
                 <div class="upload-content">
                   <div class="upload-folder-icon">📁</div>
                   <p class="upload-main-text">拖拽文件到此处或点击选择文件</p>
-                  <p class="upload-sub-text">支持 PDF、Word、TXT、Markdown 格式</p>
+                  <p class="upload-sub-text">支持 PDF、Word、TXT、Markdown、JSON、YAML 格式</p>
                   <el-button type="primary" color="#3b95d9" class="upload-select-btn">选择文件</el-button>
                   <div v-if="selectedFile" class="upload-selected-text">
                     已选择：{{ selectedFile.name }}
@@ -142,8 +142,8 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
 import { addTaskToHistory } from '../utils/taskHistory'
+import { createTask } from '../api/generate'
 
 const router = useRouter()
 const isSubmitting = ref(false)
@@ -204,13 +204,7 @@ const submit = async () => {
       formData.append('file', selectedFile.value)
     }
 
-    const token = localStorage.getItem('token')
-    const headers: Record<string, string> = {}
-    if (token) {
-      headers.Authorization = `Bearer ${token}`
-    }
-
-    const response = await axios.post('/api/tasks', formData, { headers })
+    const response = await createTask(formData)
 
     if (response.data.code === 0) {
       const taskId = response.data?.data?.task_id

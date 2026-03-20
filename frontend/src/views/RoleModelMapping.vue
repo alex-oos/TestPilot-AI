@@ -108,7 +108,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import axios from 'axios'
+import {
+  createRoleConfig as createRoleConfigApi,
+  deleteRoleConfig as deleteRoleConfigApi,
+  editRoleConfig as editRoleConfigApi,
+  getRoleConfigs,
+} from '../api/role-config'
 
 interface AIModelConfig {
   id: string
@@ -216,7 +221,7 @@ function resetDialogForm() {
 async function loadData() {
   loading.value = true
   try {
-    const resp = await axios.get('/api/config-center/role-configs/list')
+    const resp = await getRoleConfigs()
     const data = resp.data?.data || {}
     modelConfigs.value = Array.isArray(data?.ai_model_configs) ? data.ai_model_configs : []
     roleConfigList.value = Array.isArray(data?.role_config_items)
@@ -239,7 +244,7 @@ function applyRoleSectionData(data: any) {
 async function createRoleConfig(record: RoleConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.post('/api/config-center/role-configs/create', record)
+    const resp = await createRoleConfigApi(record)
     applyRoleSectionData(resp.data?.data || {})
     ElMessage.success('角色配置已保存')
   } catch (e: any) {
@@ -252,7 +257,7 @@ async function createRoleConfig(record: RoleConfigItem) {
 async function updateRoleConfig(record: RoleConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.put('/api/config-center/role-configs/edit', record)
+    const resp = await editRoleConfigApi(record)
     applyRoleSectionData(resp.data?.data || {})
     ElMessage.success('角色配置已保存')
   } catch (e: any) {
@@ -307,7 +312,7 @@ async function removeRoleConfig(item: RoleConfigItem) {
 
   saving.value = true
   try {
-    const resp = await axios.delete(`/api/config-center/role-configs/delete/${encodeURIComponent(item.id)}`)
+    const resp = await deleteRoleConfigApi(item.id)
     applyRoleSectionData(resp.data?.data || {})
     ElMessage.success('角色配置已删除')
   } catch (e: any) {

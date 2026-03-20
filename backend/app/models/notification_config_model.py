@@ -13,3 +13,4 @@ class NotificationConfig(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     webhook: Mapped[str] = mapped_column(String, default="")
     secret: Mapped[str] = mapped_column(String, default="")
+    custom_keyword: Mapped[str] = mapped_column(String, default="")

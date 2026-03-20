@@ -7,25 +7,28 @@ from app.core.config import settings
 from app.modules.persistence import config_center_store
 
 
-async def _send_to_webhook(channel: str, webhook: str, title: str, text: str) -> None:
+async def _send_to_webhook(channel: str, webhook: str, title: str, text: str, custom_keyword: str = "") -> None:
     if not webhook:
         return
+
+    prefix = str(custom_keyword or "").strip()
+    body = f"{prefix}\n{title}\n{text}" if prefix else f"{title}\n{text}"
 
     payload: Dict[str, Any]
     if channel == "feishu":
         payload = {
             "msg_type": "text",
-            "content": {"text": f"{title}\n{text}"},
+            "content": {"text": body},
         }
     elif channel == "dingtalk":
         payload = {
             "msgtype": "text",
-            "text": {"content": f"{title}\n{text}"},
+            "text": {"content": body},
         }
     else:  # wecom
         payload = {
             "msgtype": "text",
-            "text": {"content": f"{title}\n{text}"},
+            "text": {"content": body},
         }
 
     async with httpx.AsyncClient(timeout=8.0) as client:
@@ -59,11 +62,12 @@ async def notify_task_event(
             continue
 
         webhook = str(channel_cfg.get("webhook") or "").strip()
+        custom_keyword = str(channel_cfg.get("custom_keyword") or "").strip()
         if not webhook:
             continue
 
         try:
-            await _send_to_webhook(channel, webhook, title, text)
+            await _send_to_webhook(channel, webhook, title, text, custom_keyword)
             logger.info(f"Notification sent via {channel} for task={task_id}")
         except Exception as exc:
             logger.error(f"Notification send failed via {channel} for task={task_id}: {exc}")

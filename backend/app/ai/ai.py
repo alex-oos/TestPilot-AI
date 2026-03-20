@@ -19,24 +19,42 @@ DEFAULT_GENERATION_PROMPT = """
 你是一个资深的软件测试工程师。
 基于前述分配的【测试策略】，请编写详细的系统级测试用例。
 【关键要求】：
-你必须直接返回一个合法的 JSON 数组结构（List of Objects），并且不要包裹在 markdown 代码块（如 ```json）中。不要有任何前言或后语。
-JSON 中的每一个对象代表一个测试用例，必须严格符合以下字段定义：
-[
+你必须直接返回一个合法的 JSON 对象，不要包裹在 markdown 代码块（如 ```json）中，不要有任何前言或后语。 
+JSON 必须严格符合以下结构：
+{
+  "cases": [
     {
-        "id": 101, // 整数，测试用例递增ID
-        "module": "测试模块名称", // 字符串
-        "title": "测试用例标题", // 字符串
-        "precondition": "前置条件说明", // 字符串，如果没有填无
-        "steps": "步骤1... \\n步骤2...", // 字符串，包含换行符的详细步骤
-        "expected_result": "预期结果", // 字符串
-        "priority": "高" // 字符串：高、中、低
+      "id": 101, // 整数，测试用例递增ID
+      "module": "测试模块名称", // 字符串
+      "title": "测试用例标题", // 字符串
+      "precondition": "前置条件说明", // 字符串，如果没有填无
+      "steps": "步骤1... \\n步骤2...", // 字符串，包含换行符的详细步骤
+      "expected_result": "预期结果", // 字符串
+      "priority": "高" // 字符串：高、中、低
     }
-]
+  ]
+}
+title：验证 xx 功能
+1. 直接开始生成测试用例，不要添加任何概述、介绍、文档说明或总结
+2. 第一个输出必须是测试用例，格式：## TC-001: 标题
+3. 每个测试用例必须以 ## TC-XXX: 标题 格式开始
+4. 必须包含 **优先级:**、**描述:**、**前置条件:** 等加粗字段
+5. 测试步骤必须使用标准的Markdown表格格式，包含表头和分隔行
+6. 表格必须有三列：#、步骤描述、预期结果
+7. 确保测试用例覆盖需求分析中的所有功能点
+8. 包含正向、负向和边界测试场景
+禁止输出：
+- 不要输出"基于以下需求..."等介绍性文字
+- 不要输出"测试用例集"等标题
+- 不要输出测试范围或覆盖说明
+- 直接从第一个测试用例 ## TC-001 开始
+
+请严格遵循格式要求，直接生成测试用例。
 """
 
 DEFAULT_REVIEW_PROMPT = """
 你是一个资深的软件质量保证（QA）专家。
-请对已生成的测试用例进行评审，找出不足之处并提出优化建议。
+请对已生成的测试用例进行评审，找出不足之处，并且将其修改正确，补充缺少的测试用例
 
 【关键要求】：
 你必须直接返回一个合法的 JSON 对象，不要包裹在 markdown 代码块中，不要有任何前言或后语。
@@ -52,13 +70,25 @@ JSON 必须严格符合以下结构：
     }
   ],
   "quality_score": 85,
-  "summary": "整体评审总结"
+  "summary": "整体评审总结",
+  "reviewed_cases": [
+    {
+      "id": 101,
+      "module": "测试模块名称",
+      "title": "修正后的测试用例标题",
+      "precondition": "前置条件说明",
+      "steps": "步骤1...\\n步骤2...",
+      "expected_result": "预期结果",
+      "priority": "高"
+    }
+  ]
 }
 - issues: 发现的问题列表（如：缺少并发测试、未覆盖边界值等）
 - suggestions: 优化建议列表
 - missing_scenarios: 建议补充的测试场景列表
 - quality_score: 用例质量评分（0-100）
 - summary: 整体评审总结（中文，100字以内）
+- reviewed_cases: 基于评审意见自动修正后的完整测试用例列表（必须返回）
 """
 
 
@@ -131,6 +161,120 @@ def _parse_cases_payload(text: str) -> List[Dict[str, Any]]:
     # 2) 解析首个 JSON 值（可能是对象包裹数组）
     payload = json.loads(_extract_first_json_value_text(text))
     return _normalize_cases(_extract_cases_payload(payload))
+
+
+def _extract_review_payload(data: Any) -> Any:
+    if isinstance(data, dict):
+        if any(key in data for key in ("issues", "suggestions", "missing_scenarios", "quality_score", "summary")):
+            return data
+        for key in ("review", "result", "data", "payload"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                return value
+    return data
+
+
+def _normalize_review_payload(review: Any) -> Dict[str, Any]:
+    if not isinstance(review, dict):
+        raise ValueError("评审结果不是对象")
+
+    issues_raw = review.get("issues") or []
+    suggestions_raw = review.get("suggestions") or []
+    missing_raw = review.get("missing_scenarios") or []
+
+    if not isinstance(issues_raw, list):
+        issues_raw = [issues_raw] if issues_raw else []
+    if not isinstance(suggestions_raw, list):
+        suggestions_raw = [suggestions_raw] if suggestions_raw else []
+    if not isinstance(missing_raw, list):
+        missing_raw = [missing_raw] if missing_raw else []
+
+    issues = [str(x).strip() for x in issues_raw if str(x).strip()]
+    suggestions = [str(x).strip() for x in suggestions_raw if str(x).strip()]
+    missing_scenarios: List[Dict[str, str]] = []
+    for item in missing_raw:
+        if isinstance(item, dict):
+            missing_scenarios.append(
+                {
+                    "module": str(item.get("module") or "").strip(),
+                    "scenario": str(item.get("scenario") or "").strip(),
+                    "test_point": str(item.get("test_point") or "").strip(),
+                }
+            )
+        else:
+            text = str(item).strip()
+            if text:
+                missing_scenarios.append({"module": "", "scenario": text, "test_point": ""})
+
+    try:
+        quality_score = int(float(review.get("quality_score", 0)))
+    except Exception:
+        quality_score = 0
+    quality_score = max(0, min(100, quality_score))
+
+    summary = str(review.get("summary") or "").strip()
+    if not summary:
+        summary = "评审已完成。"
+
+    reviewed_cases: List[Dict[str, Any]] = []
+    raw_reviewed_cases = review.get("reviewed_cases")
+    if isinstance(raw_reviewed_cases, list):
+        try:
+            reviewed_cases = _normalize_cases(raw_reviewed_cases)
+        except Exception:
+            reviewed_cases = []
+
+    normalized_review = {
+        "issues": issues,
+        "suggestions": suggestions,
+        "missing_scenarios": missing_scenarios,
+        "quality_score": quality_score,
+        "summary": summary,
+    }
+    if reviewed_cases:
+        normalized_review["reviewed_cases"] = reviewed_cases
+    return normalized_review
+
+
+def _parse_review_payload(text: str) -> Dict[str, Any]:
+    payload = json.loads(_extract_first_json_value_text(text))
+    return _normalize_review_payload(_extract_review_payload(payload))
+
+
+async def _revise_cases_from_review(
+    *,
+    role_cfg: Dict[str, Any],
+    original_cases: List[Dict[str, Any]],
+    analysis: str,
+    review: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    revise_prompt = (
+        "你是测试用例修正助手。请依据需求分析与评审结果，输出修正后的完整测试用例列表。"
+        "必须只返回 JSON 数组，不要 markdown，不要解释。字段严格为："
+        "id,module,title,precondition,steps,expected_result,priority。"
+    )
+    revise_messages = [
+        {"role": "system", "content": revise_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"【需求分析】\n{analysis}\n\n"
+                f"【原始用例】\n{json.dumps(original_cases, ensure_ascii=False, indent=2)}\n\n"
+                f"【评审结果】\n{json.dumps(review, ensure_ascii=False, indent=2)}\n"
+            ),
+        },
+    ]
+    revised_raw = await llm_client.chat(
+        messages=revise_messages,
+        temperature=0,
+        model=role_cfg["model"],
+        api_key=role_cfg.get("api_key"),
+        base_url=role_cfg.get("base_url"),
+        max_tokens=role_cfg.get("max_tokens"),
+        top_p=role_cfg.get("top_p"),
+    )
+    _raise_if_llm_error(revised_raw, "测试用例评审后修正")
+    return _parse_cases_payload(revised_raw)
 
 
 def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
@@ -321,6 +465,7 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
     cases_json_str = await llm_client.chat(
         messages=messages,
         temperature=float(role_cfg.get("temperature", 0.1)),
+        response_format={"type": "json_object"},
         model=role_cfg["model"],
         api_key=role_cfg.get("api_key"),
         base_url=role_cfg.get("base_url"),
@@ -337,9 +482,9 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
             {
                 "role": "system",
                 "content": (
-                    "你是一个 JSON 修复助手。请将用户提供的内容修复为合法 JSON 数组。"
-                    "如果用户内容是 JSON 对象，请提取其中测试用例列表字段（test_cases/cases/items/data）"
-                    "并转换为 JSON 数组。只返回 JSON 数组，不要任何解释。"
+                    "你是一个 JSON 修复助手。请将用户提供的内容修复为合法 JSON 对象，且必须包含 cases 数组字段。"
+                    "如果用户内容是 JSON 对象，请提取其中测试用例列表字段（test_cases/cases/items/data）并放入 cases 字段。"
+                    "只返回 JSON 对象，不要任何解释。"
                 ),
             },
             {"role": "user", "content": cases_json_str},
@@ -347,6 +492,7 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
         repaired = await llm_client.chat(
             messages=repair_messages,
             temperature=0,
+            response_format={"type": "json_object"},
             model=role_cfg["model"],
             api_key=role_cfg.get("api_key"),
             base_url=role_cfg.get("base_url"),
@@ -363,7 +509,7 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
                 cases_json_str,
                 repaired,
             )
-            raise RuntimeError("测试用例生成结果解析失败，请检查模型输出格式或提示词配置") from repair_error
+            raise RuntimeError("测试用例生成结果解析失败：模型未返回合法 JSON") from repair_error
 
     logger.success(f"Generated {len(cases)} test cases.")
     return cases
@@ -392,6 +538,7 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
     review_str = await llm_client.chat(
         messages=messages,
         temperature=float(role_cfg.get("temperature", 0.3)),
+        response_format={"type": "json_object"},
         model=role_cfg["model"],
         api_key=role_cfg.get("api_key"),
         base_url=role_cfg.get("base_url"),
@@ -400,26 +547,54 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
     )
     _raise_if_llm_error(review_str, "测试用例评审")
     
-    # Clean up potential markdown wrapping
-    review_str = review_str.strip()
-    review_str = re.sub(r'^```json\s*', '', review_str)
-    review_str = re.sub(r'^```\s*', '', review_str)
-    review_str = re.sub(r'\s*```$', '', review_str)
-    review_str = review_str.strip()
-    
     try:
-        review = json.loads(review_str)
-        if not isinstance(review, dict):
-            raise ValueError("LLM did not return a dict")
-    except Exception as e:
-        logger.error(f"Failed to parse review JSON from LLM: {str(e)}\nRaw: {review_str}")
-        review = {
-            "issues": ["AI评审解析失败，请检查LLM输出格式"],
-            "suggestions": ["建议手动检查生成的测试用例完整性"],
-            "missing_scenarios": [],
-            "quality_score": 0,
-            "summary": "AI评审模块返回内容格式有误，已降级处理。"
-        }
+        review = _parse_review_payload(review_str)
+    except Exception as parse_error:
+        logger.warning(f"Review JSON parse failed, trying repair once: {parse_error}")
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个 JSON 修复助手。请将用户提供的评审内容修复为合法 JSON 对象。"
+                    "必须包含 issues、suggestions、missing_scenarios、quality_score、summary 字段。"
+                    "只返回 JSON 对象，不要任何解释。"
+                ),
+            },
+            {"role": "user", "content": review_str},
+        ]
+        repaired = await llm_client.chat(
+            messages=repair_messages,
+            temperature=0,
+            response_format={"type": "json_object"},
+            model=role_cfg["model"],
+            api_key=role_cfg.get("api_key"),
+            base_url=role_cfg.get("base_url"),
+            max_tokens=role_cfg.get("max_tokens"),
+            top_p=role_cfg.get("top_p"),
+        )
+        _raise_if_llm_error(repaired, "测试用例评审修复")
+        try:
+            review = _parse_review_payload(repaired)
+        except Exception as repair_error:
+            logger.error(
+                "Failed to parse review JSON after repair: {} | raw={} | repaired={}",
+                repair_error,
+                review_str,
+                repaired,
+            )
+            raise RuntimeError("AI评审解析失败：模型未返回合法 JSON") from repair_error
+
+    if not isinstance(review.get("reviewed_cases"), list) or not review.get("reviewed_cases"):
+        try:
+            review["reviewed_cases"] = await _revise_cases_from_review(
+                role_cfg=role_cfg,
+                original_cases=cases,
+                analysis=analysis,
+                review=review,
+            )
+        except Exception as revise_error:
+            logger.warning(f"Review cases auto-revise failed, fallback to original cases: {revise_error}")
+            review["reviewed_cases"] = cases
     
     logger.success(f"Test case review completed. Quality score: {review.get('quality_score', 'N/A')}")
     return review

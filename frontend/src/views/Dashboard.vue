@@ -129,8 +129,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { getDashboardOverview } from '../api/dashboard'
 
 interface DashboardOverview {
   summary: {
@@ -194,7 +194,7 @@ onMounted(() => {
 async function fetchOverview() {
   loading.value = true
   try {
-    const resp = await axios.get('/api/dashboard/overview')
+    const resp = await getDashboardOverview()
     if (resp.data?.code === 0 && resp.data?.data) {
       overview.value = {
         ...overview.value,

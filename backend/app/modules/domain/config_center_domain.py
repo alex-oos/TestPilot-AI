@@ -142,9 +142,9 @@ async def _load_prompts(db) -> Dict[str, str]:
 
 async def _load_notifications(db) -> Dict[str, Dict[str, Any]]:
     result = {
-        "feishu": {"name": "", "enabled": False, "webhook": "", "secret": ""},
-        "dingtalk": {"name": "", "enabled": False, "webhook": "", "secret": ""},
-        "wecom": {"name": "", "enabled": False, "webhook": "", "secret": ""},
+        "feishu": {"name": "", "enabled": False, "webhook": "", "secret": "", "custom_keyword": ""},
+        "dingtalk": {"name": "", "enabled": False, "webhook": "", "secret": "", "custom_keyword": ""},
+        "wecom": {"name": "", "enabled": False, "webhook": "", "secret": "", "custom_keyword": ""},
     }
     for r in await NotificationConfigRepository.list(db):
         ch = str(r.channel or "").lower()
@@ -154,6 +154,7 @@ async def _load_notifications(db) -> Dict[str, Dict[str, Any]]:
                 "enabled": bool(r.enabled),
                 "webhook": str(r.webhook or ""),
                 "secret": str(r.secret or ""),
+                "custom_keyword": str(getattr(r, "custom_keyword", "") or ""),
             }
     return result
 
@@ -250,6 +251,7 @@ async def seed_default_config_center() -> None:
                     enabled=False,
                     webhook="",
                     secret="",
+                    custom_keyword="",
                     created_at=now,
                     updated_at=now,
                 )
@@ -536,6 +538,7 @@ async def update_notifications_section(notifications_payload: Dict[str, Any]) ->
                 "enabled": bool(cur.get("enabled", merged[ch]["enabled"])),
                 "webhook": str(cur.get("webhook") or merged[ch]["webhook"]),
                 "secret": str(cur.get("secret") or merged[ch]["secret"]),
+                "custom_keyword": str(cur.get("custom_keyword") or cur.get("keyword") or merged[ch]["custom_keyword"]),
             }
         await NotificationConfigRepository.clear(db)
         for ch, cfg in merged.items():
@@ -546,6 +549,7 @@ async def update_notifications_section(notifications_payload: Dict[str, Any]) ->
                 enabled=cfg["enabled"],
                 webhook=cfg["webhook"],
                 secret=cfg["secret"],
+                custom_keyword=cfg["custom_keyword"],
                 created_at=now,
                 updated_at=now,
             )
@@ -568,6 +572,7 @@ async def update_notification_channel_config(channel: str, payload: Dict[str, An
             row.enabled = bool(payload.get("enabled", row.enabled))
             row.webhook = str(payload.get("webhook") or row.webhook or "")
             row.secret = str(payload.get("secret") or row.secret or "")
+            row.custom_keyword = str(payload.get("custom_keyword") or payload.get("keyword") or row.custom_keyword or "")
             row.updated_at = now
         else:
             await NotificationConfigRepository.create(
@@ -577,6 +582,7 @@ async def update_notification_channel_config(channel: str, payload: Dict[str, An
                 enabled=bool(payload.get("enabled", False)),
                 webhook=str(payload.get("webhook") or ""),
                 secret=str(payload.get("secret") or ""),
+                custom_keyword=str(payload.get("custom_keyword") or payload.get("keyword") or ""),
                 created_at=now,
                 updated_at=now,
             )

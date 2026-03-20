@@ -74,7 +74,7 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import { loginByFallback } from '../api/login'
 
 const router = useRouter()
 const loading = ref(false)
@@ -85,18 +85,6 @@ const loginForm = reactive({
   remember: false
 })
 
-const DEFAULT_API_BASE = '/api'
-const DIRECT_BACKEND_API_BASE = 'http://127.0.0.1:8001/api'
-const apiBase = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(/\/$/, '')
-
-const doLoginRequest = (base: string) => {
-  const normalizedBase = (base || DEFAULT_API_BASE).replace(/\/$/, '')
-  return axios.post(`${normalizedBase}/auth/tokens`, {
-    username: loginForm.username,
-    password: loginForm.password
-  })
-}
-
 const handleLogin = async () => {
   if (!loginForm.username || !loginForm.password) {
     ElMessage.warning('请输入用户名和密码')
@@ -106,16 +94,7 @@ const handleLogin = async () => {
   loading.value = true
   try {
     let response
-    try {
-      response = await doLoginRequest(DIRECT_BACKEND_API_BASE)
-    } catch (directError: any) {
-      // 直连失败后再回退到代理地址，兼容不同开发环境
-      try {
-        response = await doLoginRequest(apiBase)
-      } catch (proxyError: any) {
-        throw proxyError?.response ? proxyError : directError
-      }
-    }
+    response = await loginByFallback(loginForm.username, loginForm.password)
 
     const payload = response.data?.data || {}
     if (!payload.token) {

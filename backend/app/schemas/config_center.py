@@ -71,6 +71,7 @@ class ChannelConfig(BaseModel):
     enabled: bool = False
     webhook: str = ""
     secret: str = ""
+    custom_keyword: str = ""
 
 
 class NotificationsConfig(BaseModel):

@@ -12,6 +12,9 @@
     "@tailwindcss/vite": "^4.2.1",
     "axios": "^1.13.6",
     "element-plus": "^2.13.5",
+    "markmap-common": "^0.19.1",
+    "markmap-lib": "^0.19.1",
+    "markmap-view": "^0.19.1",
     "tailwindcss": "^4.2.1",
     "vue": "^3.5.30",
     "vue-router": "^5.0.3"

@@ -38,7 +38,7 @@ async def create_task_record(
             ("analysis", "需求分析", "pending"),
             ("generation", "用例编写", "pending"),
             ("review", "用例评审", "pending"),
-            ("notify", "钉钉通知", "pending"),
+            ("manual_review", "人工审核", "pending"),
         ):
             await TaskDetailRepository.create(
                 db,
