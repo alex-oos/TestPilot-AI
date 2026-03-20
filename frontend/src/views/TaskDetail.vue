@@ -316,7 +316,7 @@ onUnmounted(() => {
 
 async function fetchTaskSnapshot() {
   try {
-    const resp = await axios.get(`/api/use_cases/task/${taskId}`)
+    const resp = await axios.get(`/api/tasks/${taskId}`)
     if (resp.data?.data) {
       task.value = { ...task.value, ...resp.data.data }
       hydrateReviewEditableCases(true)
@@ -329,7 +329,7 @@ async function fetchTaskSnapshot() {
 }
 
 function startSSE() {
-  eventSource = new EventSource(`/api/use_cases/task/${taskId}/stream`)
+  eventSource = new EventSource(`/api/tasks/${taskId}/events`)
 
   eventSource.onmessage = (e) => {
     try {
@@ -615,7 +615,7 @@ async function saveReviewCases() {
         ...normalizeReviewCase(item, idx + 1),
       })),
     }
-    const resp = await axios.put(`/api/use_cases/task/${taskId}/review-cases`, payload)
+    const resp = await axios.put(`/api/tasks/${taskId}/review-cases`, payload)
     const data = resp.data?.data || {}
     if (data.task) {
       task.value = { ...task.value, ...data.task }
@@ -635,7 +635,7 @@ async function exportExcel() {
   if (!cases.value.length) return
   exporting.value.excel = true
   try {
-    const resp = await axios.post('/api/use_cases/export/excel', { cases: cases.value }, { responseType: 'blob' })
+    const resp = await axios.post('/api/tasks/exports/excel', { cases: cases.value }, { responseType: 'blob' })
     downloadBlob(resp.data, 'test_cases.xlsx')
     ElMessage.success('Excel 导出成功')
   } catch {
@@ -650,7 +650,7 @@ async function exportXmind() {
   exporting.value.xmind = true
   try {
     const resp = await axios.post(
-      '/api/use_cases/export/xmind',
+      '/api/tasks/exports/xmind',
       { cases: cases.value, title: 'AI自动生成测试用例' },
       { responseType: 'blob' }
     )
@@ -667,7 +667,7 @@ async function syncMs() {
   if (!cases.value.length) return
   exporting.value.ms = true
   try {
-    const resp = await axios.post('/api/use_cases/sync/ms', { cases: cases.value })
+    const resp = await axios.post('/api/tasks/sync/ms', { cases: cases.value })
     ElMessage.success(resp.data.data.message || '同步成功')
   } catch {
     ElMessage.error('同步失败')

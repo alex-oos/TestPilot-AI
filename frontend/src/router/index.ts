@@ -41,10 +41,6 @@ const routes: Array<RouteRecordRaw> = [
         component: () => import('../views/RoleModelMapping.vue')
       },
       {
-        path: 'config-center/role-models',
-        redirect: '/config-center/role-configs'
-      },
-      {
         path: 'config-center/prompts',
         name: 'ConfigCenterPrompts',
         component: () => import('../views/ConfigCenter.vue')

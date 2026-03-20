@@ -144,7 +144,7 @@ onMounted(() => {
 async function fetchTasks() {
   loading.value = true
   try {
-    const resp = await axios.get('/api/use_cases/tasks', {
+    const resp = await axios.get('/api/tasks', {
       params: {
         page: page.value,
         page_size: pageSize.value,
@@ -206,7 +206,7 @@ async function retryTask(row: any) {
   if (!confirmed) return
 
   try {
-    const resp = await axios.post(`/api/use_cases/task/${row.id}/retry`)
+    const resp = await axios.post(`/api/tasks/${row.id}/retries`)
     const sameTaskId = resp.data?.data?.task_id || row.id
     ElMessage.success('任务已重试')
     if (sameTaskId) {
@@ -232,7 +232,7 @@ async function deleteTask(row: any) {
   if (!confirmed) return
 
   try {
-    await axios.delete(`/api/use_cases/task/${row.id}`)
+    await axios.delete(`/api/tasks/${row.id}`)
     ElMessage.success('任务已删除')
     if (tasks.value.length === 1 && page.value > 1) {
       page.value -= 1
@@ -258,7 +258,7 @@ async function batchDeleteTasks() {
   if (!confirmed) return
 
   try {
-    await axios.delete('/api/use_cases/tasks', { data: { task_ids: ids } })
+    await axios.delete('/api/tasks', { data: { task_ids: ids } })
     ElMessage.success(`已删除 ${ids.length} 个任务`)
     if (tasks.value.length === ids.length && page.value > 1) {
       page.value -= 1

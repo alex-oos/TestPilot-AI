@@ -216,7 +216,7 @@ function resetDialogForm() {
 async function loadData() {
   loading.value = true
   try {
-    const resp = await axios.get('/api/config-center/role-configs')
+    const resp = await axios.get('/api/config-center/role-configs/list')
     const data = resp.data?.data || {}
     modelConfigs.value = Array.isArray(data?.ai_model_configs) ? data.ai_model_configs : []
     roleConfigList.value = Array.isArray(data?.role_config_items)
@@ -229,17 +229,31 @@ async function loadData() {
   }
 }
 
-async function persistRoleConfigList(nextList: RoleConfigItem[]) {
-  const payload = {
-    role_config_items: nextList,
-  }
+function applyRoleSectionData(data: any) {
+  modelConfigs.value = Array.isArray(data?.ai_model_configs) ? data.ai_model_configs : modelConfigs.value
+  roleConfigList.value = Array.isArray(data?.role_config_items)
+    ? data.role_config_items.map((x: any) => normalizeRoleItem(x))
+    : []
+}
+
+async function createRoleConfig(record: RoleConfigItem) {
   saving.value = true
   try {
-    const resp = await axios.put('/api/config-center/role-configs', payload)
-    const data = resp.data?.data || {}
-    roleConfigList.value = Array.isArray(data?.role_config_items)
-      ? data.role_config_items.map((x: any) => normalizeRoleItem(x))
-      : []
+    const resp = await axios.post('/api/config-center/role-configs/create', record)
+    applyRoleSectionData(resp.data?.data || {})
+    ElMessage.success('角色配置已保存')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.msg || e?.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function updateRoleConfig(record: RoleConfigItem) {
+  saving.value = true
+  try {
+    const resp = await axios.put('/api/config-center/role-configs/edit', record)
+    applyRoleSectionData(resp.data?.data || {})
     ElMessage.success('角色配置已保存')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.msg || e?.response?.data?.detail || '保存失败')
@@ -275,22 +289,11 @@ async function submitDialog() {
     modifier: 'admin',
   }
 
-  let nextList = [...roleConfigList.value]
-  nextList = nextList.map((x) => {
-    if (record.enabled && x.role_type === record.role_type && x.id !== record.id) {
-      return { ...x, enabled: false, updated_at: now, modifier: 'admin' }
-    }
-    return x
-  })
-
-  const idx = nextList.findIndex((x) => x.id === record.id)
-  if (idx >= 0) {
-    nextList[idx] = record
+  if (editingId.value) {
+    await updateRoleConfig(record)
   } else {
-    nextList.unshift(record)
+    await createRoleConfig(record)
   }
-
-  await persistRoleConfigList(nextList)
   dialogVisible.value = false
 }
 
@@ -302,8 +305,16 @@ async function removeRoleConfig(item: RoleConfigItem) {
   }).catch(() => false)
   if (!confirmed) return
 
-  const nextList = roleConfigList.value.filter((x) => x.id !== item.id)
-  await persistRoleConfigList(nextList)
+  saving.value = true
+  try {
+    const resp = await axios.delete(`/api/config-center/role-configs/delete/${encodeURIComponent(item.id)}`)
+    applyRoleSectionData(resp.data?.data || {})
+    ElMessage.success('角色配置已删除')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.msg || e?.response?.data?.detail || '删除失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 onMounted(() => {

@@ -6,7 +6,7 @@ import asyncio
 from typing import Optional
 from loguru import logger
 from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
-from app.core import database
+from app.modules.persistence import config_center_store
 from app.services.notification import notify_task_event, notify_dingtalk_adoption_decision
 from app.services.exporter import convert_cases_to_mindmap
 from app.services import task_manager
@@ -39,8 +39,8 @@ def _role_display_name(role: str) -> str:
     return mapping.get(role, role)
 
 
-def _validate_local_runtime_config(required_roles: Optional[list[str]] = None) -> dict:
-    cfg = database.get_config_center()
+async def _validate_local_runtime_config(required_roles: Optional[list[str]] = None) -> dict:
+    cfg = await config_center_store.get_config_center()
 
     enabled_models = [x for x in cfg.get("ai_model_configs", []) if isinstance(x, dict) and x.get("enabled", True)]
     enabled_prompts = [x for x in cfg.get("prompt_configs", []) if isinstance(x, dict) and x.get("enabled", True)]
@@ -82,8 +82,8 @@ def _validate_local_runtime_config(required_roles: Optional[list[str]] = None) -
     return enabled_behaviors[0]
 
 
-def _read_output_mode() -> str:
-    cfg = database.get_config_center()
+async def _read_output_mode() -> str:
+    cfg = await config_center_store.get_config_center()
     enabled_behaviors = [
         x for x in cfg.get("generation_behavior_configs", []) if isinstance(x, dict) and x.get("enabled", True)
     ]
@@ -113,7 +113,7 @@ async def run_generation_pipeline(
       4. notify    → 钉钉采纳确认
     """
     try:
-        behavior_cfg = _validate_local_runtime_config()
+        behavior_cfg = await _validate_local_runtime_config()
         ai_timeout_seconds = int(behavior_cfg.get("review_timeout_seconds") or 1500)
 
         async def run_ai_step(coro, step_name: str):
@@ -126,7 +126,7 @@ async def run_generation_pipeline(
 
         # ── Step 0: Parse document ──────────────────────────────────────────
         parse_status_text = "需求描述分析中" if source_type == "manual" else "本地文件分析中"
-        task_manager.set_task_status(task_id, "running", status_text=parse_status_text)
+        await task_manager.set_task_status(task_id, "running", status_text=parse_status_text)
         text_content = ""
 
         if source_type in ("local", "manual") and file_content is None and file_path:
@@ -164,20 +164,20 @@ async def run_generation_pipeline(
             raise ValueError("无法从文档中提取到文本内容")
         
         # ── Phase 1: 需求分析 ─────────────────────────────────────────────
-        task_manager.set_task_status(task_id, "running", status_text="需求分析中")
-        task_manager.update_phase(task_id, "analysis", "running", {
+        await task_manager.set_task_status(task_id, "running", status_text="需求分析中")
+        await task_manager.update_phase(task_id, "analysis", "running", {
             "source_text": text_content,
         })
         logger.info(f"Task {task_id} | Phase 1: Requirement Analysis")
-        _validate_local_runtime_config(["analysis"])
-        analysis_output_mode = _read_output_mode()
+        await _validate_local_runtime_config(["analysis"])
+        analysis_output_mode = await _read_output_mode()
         
         analysis = await run_ai_step(analyze_requirements(text_content), "需求分析")
         if _is_llm_error(analysis):
             raise RuntimeError(f"需求分析失败: {analysis}")
         # 实时模式下，需求分析结果先落库，保证页面可立即展示
         if analysis_output_mode == "stream":
-            task_manager.update_phase(task_id, "analysis", "running", {
+            await task_manager.update_phase(task_id, "analysis", "running", {
                 "source_text": text_content,
                 "analysis": analysis,
                 "output_mode": analysis_output_mode,
@@ -187,7 +187,7 @@ async def run_generation_pipeline(
         if _is_llm_error(design):
             raise RuntimeError(f"测试策略生成失败: {design}")
         
-        task_manager.update_phase(task_id, "analysis", "completed", {
+        await task_manager.update_phase(task_id, "analysis", "completed", {
             "source_text": text_content,
             "analysis": analysis,
             "design": design,
@@ -195,48 +195,48 @@ async def run_generation_pipeline(
         })
         
         # ── Phase 2: 用例编写 ─────────────────────────────────────────────
-        task_manager.set_task_status(task_id, "running", status_text="用例编写中")
-        generation_output_mode = _read_output_mode()
-        task_manager.update_phase(task_id, "generation", "running", {
+        await task_manager.set_task_status(task_id, "running", status_text="用例编写中")
+        generation_output_mode = await _read_output_mode()
+        await task_manager.update_phase(task_id, "generation", "running", {
             "output_mode": generation_output_mode,
         })
         logger.info(f"Task {task_id} | Phase 2: Test Case Generation")
-        _validate_local_runtime_config(["generation"])
+        await _validate_local_runtime_config(["generation"])
         
         cases = await run_ai_step(generate_test_cases(design), "测试用例生成")
         # 实时模式下，用例生成结果先落库，保证页面可立即展示
         if generation_output_mode == "stream":
-            task_manager.update_phase(task_id, "generation", "running", {
+            await task_manager.update_phase(task_id, "generation", "running", {
                 "cases": cases,
                 "output_mode": generation_output_mode,
             })
         mindmap = convert_cases_to_mindmap(cases)
         
-        task_manager.update_phase(task_id, "generation", "completed", {
+        await task_manager.update_phase(task_id, "generation", "completed", {
             "cases": cases,
             "output_mode": generation_output_mode,
         })
-        task_manager.set_task_mindmap(task_id, mindmap)
+        await task_manager.set_task_mindmap(task_id, mindmap)
         
         # ── Phase 3: 用例评审 ─────────────────────────────────────────────
         review = {}
-        review_output_mode = _read_output_mode()
+        review_output_mode = await _read_output_mode()
         if behavior_cfg.get("enable_ai_review", True):
-            task_manager.set_task_status(task_id, "running", status_text="用例评审中")
-            task_manager.update_phase(task_id, "review", "running", {
+            await task_manager.set_task_status(task_id, "running", status_text="用例评审中")
+            await task_manager.update_phase(task_id, "review", "running", {
                 "output_mode": review_output_mode,
             })
             logger.info(f"Task {task_id} | Phase 3: AI Review")
-            _validate_local_runtime_config(["review"])
+            await _validate_local_runtime_config(["review"])
 
             review = await run_ai_step(review_test_cases(cases, analysis), "测试用例评审")
             if review_output_mode == "stream":
-                task_manager.update_phase(task_id, "review", "running", {
+                await task_manager.update_phase(task_id, "review", "running", {
                     "review": review,
                     "output_mode": review_output_mode,
                 })
 
-            task_manager.update_phase(task_id, "review", "completed", {
+            await task_manager.update_phase(task_id, "review", "completed", {
                 "review": review,
                 "output_mode": review_output_mode,
             })
@@ -248,14 +248,14 @@ async def run_generation_pipeline(
                 "missing_scenarios": [],
                 "quality_score": 0,
             }
-            task_manager.update_phase(task_id, "review", "completed", {
+            await task_manager.update_phase(task_id, "review", "completed", {
                 "review": review,
                 "output_mode": review_output_mode,
             })
         
         # ── Phase 4: 钉钉通知采纳确认 ─────────────────────────────────────
-        task_manager.set_task_status(task_id, "running", status_text="发送钉钉采纳确认中")
-        task_manager.update_phase(task_id, "notify", "running")
+        await task_manager.set_task_status(task_id, "running", status_text="发送钉钉采纳确认中")
+        await task_manager.update_phase(task_id, "notify", "running")
         review_summary = ""
         if isinstance(review, dict):
             review_summary = str(review.get("summary") or "")
@@ -265,7 +265,7 @@ async def run_generation_pipeline(
             review_summary=review_summary,
             submitter=submitter or "unknown",
         )
-        task_manager.update_phase(
+        await task_manager.update_phase(
             task_id,
             "notify",
             "completed",
@@ -275,7 +275,7 @@ async def run_generation_pipeline(
                 "review_summary": review_summary,
             },
         )
-        task_manager.set_task_status(
+        await task_manager.set_task_status(
             task_id,
             "waiting_decision",
             status_text="待钉钉确认是否采纳" if notified else "待确认是否采纳（钉钉未发送）",
@@ -289,13 +289,13 @@ async def run_generation_pipeline(
         
     except Exception as e:
         logger.error(f"Task {task_id} failed: {e}")
-        task = task_manager.get_task(task_id)
+        task = await task_manager.get_task(task_id)
         failed_phase = None
         if task:
             for phase_key, phase in task["phases"].items():
                 if phase["status"] == "running":
                     failed_phase = phase_key
-                    task_manager.update_phase(task_id, phase_key, "failed")
+                    await task_manager.update_phase(task_id, phase_key, "failed")
                     break
 
         fail_status = "failed"
@@ -312,7 +312,7 @@ async def run_generation_pipeline(
         elif failed_phase == "notify":
             status_text = "钉钉通知异常"
 
-        task_manager.set_task_status(task_id, fail_status, error=str(e), status_text=status_text)
+        await task_manager.set_task_status(task_id, fail_status, error=str(e), status_text=status_text)
         await notify_task_event(
             task_id=task_id,
             task_status=status_text if fail_status != "failed" else "执行异常",

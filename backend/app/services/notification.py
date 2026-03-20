@@ -3,8 +3,8 @@ from typing import Any, Dict, List
 import httpx
 from loguru import logger
 
-from app.core import database
 from app.core.config import settings
+from app.modules.persistence import config_center_store
 
 
 async def _send_to_webhook(channel: str, webhook: str, title: str, text: str) -> None:
@@ -40,7 +40,7 @@ async def notify_task_event(
     status_text: str,
     error: str = "",
 ) -> None:
-    cfg = database.get_config_center()
+    cfg = await config_center_store.get_config_center()
     notifications = cfg.get("notifications") or {}
 
     title = "[AI测试平台] 任务状态通知"
@@ -75,7 +75,7 @@ async def notify_dingtalk_adoption_decision(
     review_summary: str,
     submitter: str = "unknown",
 ) -> bool:
-    cfg = database.get_config_center()
+    cfg = await config_center_store.get_config_center()
     dingtalk_cfg = (cfg.get("notifications") or {}).get("dingtalk") or {}
     if not dingtalk_cfg.get("enabled"):
         logger.info(f"DingTalk notification disabled, skip decision request for task={task_id}")

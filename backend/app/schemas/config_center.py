@@ -32,6 +32,9 @@ class AIModelItem(BaseModel):
     top_p: float = 0.9
     enabled: bool = True
     created_at: str = ""
+    updated_at: str = ""
+    creator: str = "admin"
+    modifier: str = "admin"
 
 
 class PromptsConfig(BaseModel):

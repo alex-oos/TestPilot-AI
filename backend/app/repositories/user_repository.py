@@ -1,18 +1,19 @@
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User
 
 
 class UserRepository:
     @staticmethod
-    def get_by_username(db: Session, username: str) -> Optional[User]:
-        return db.scalar(select(User).where(User.username == username))
+    async def get_by_username(db: AsyncSession, username: str) -> Optional[User]:
+        result = await db.execute(select(User).where(User.username == username))
+        return result.scalars().first()
 
     @staticmethod
-    def create(db: Session, *, username: str, password: str, created_at: str, updated_at: str) -> User:
+    async def create(db: AsyncSession, *, username: str, password: str, created_at: str, updated_at: str) -> User:
         user = User(
             username=username,
             password=password,
@@ -21,13 +22,13 @@ class UserRepository:
             updated_at=updated_at,
         )
         db.add(user)
-        db.flush()
+        await db.flush()
         return user
 
     @staticmethod
-    def update_password(db: Session, user: User, *, password: str, updated_at: str) -> User:
+    async def update_password(db: AsyncSession, user: User, *, password: str, updated_at: str) -> User:
         user.password = password
         user.updated_at = updated_at
         db.add(user)
-        db.flush()
+        await db.flush()
         return user

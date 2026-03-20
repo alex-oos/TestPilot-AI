@@ -4,7 +4,7 @@ import time
 from loguru import logger
 from typing import List, Dict, Any
 from app.ai.llm import llm_client
-from app.core import database
+from app.modules.persistence import config_center_store
 
 DEFAULT_ANALYSIS_PROMPT = """
 你是一个资深的软件需求分析师。
@@ -184,8 +184,8 @@ def _pick_role_prompt(cfg: Dict[str, Any], role: str, fallback: str) -> str:
     return prompt or fallback
 
 
-def _load_role_config() -> Dict[str, Dict[str, Any]]:
-    cfg = database.get_config_center()
+async def _load_role_config() -> Dict[str, Dict[str, Any]]:
+    cfg = await config_center_store.get_config_center()
     role_configs = cfg.get("role_configs", {}) or cfg.get("ai_models", {})
     analysis_options = _pick_role_model_options(cfg, "analysis")
     generation_options = _pick_role_model_options(cfg, "generation")
@@ -212,7 +212,7 @@ async def analyze_requirements(text_content: str) -> str:
     """AI Module - Requirement Analysis"""
     logger.info("AI Module: Requirement Analysis via LLM")
     
-    role_cfg = _load_role_config()["analysis"]
+    role_cfg = (await _load_role_config())["analysis"]
     system_prompt = role_cfg["prompt"]
     messages = [
         {"role": "system", "content": system_prompt},
@@ -236,7 +236,7 @@ async def design_test_strategy(analysis_result: str) -> str:
     """AI Module - Test Design"""
     logger.info("AI Module: Test Design via LLM")
     
-    role_cfg = _load_role_config()["analysis"]
+    role_cfg = (await _load_role_config())["analysis"]
     system_prompt = role_cfg["prompt"] + "\n\n你还需要输出一份全面测试策略，覆盖正常流程、边界值、异常处理与等价类。"
     messages = [
         {"role": "system", "content": system_prompt},
@@ -260,7 +260,7 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
     """AI Module - Generating Test Cases"""
     logger.info("AI Module: Generating Test Cases via LLM")
     
-    role_cfg = _load_role_config()["generation"]
+    role_cfg = (await _load_role_config())["generation"]
     system_prompt = role_cfg["prompt"]
     messages = [
         {"role": "system", "content": system_prompt},
@@ -321,7 +321,7 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
     
     cases_summary = json.dumps(cases, ensure_ascii=False, indent=2)
     
-    role_cfg = _load_role_config()["review"]
+    role_cfg = (await _load_role_config())["review"]
     system_prompt = role_cfg["prompt"]
     
     user_content = f"""【需求分析结果】：

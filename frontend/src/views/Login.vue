@@ -91,7 +91,7 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(
 
 const doLoginRequest = (base: string) => {
   const normalizedBase = (base || DEFAULT_API_BASE).replace(/\/$/, '')
-  return axios.post(`${normalizedBase}/login`, {
+  return axios.post(`${normalizedBase}/auth/tokens`, {
     username: loginForm.username,
     password: loginForm.password
   })

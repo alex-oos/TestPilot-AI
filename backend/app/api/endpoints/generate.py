@@ -14,7 +14,6 @@ router = APIRouter()
 
 
 @router.post("/tasks/uploads/local")
-@router.post("/use_cases/upload/local")
 async def upload_local_file(
     request: Request,
     file: UploadFile = File(...),
@@ -31,7 +30,6 @@ async def upload_local_file(
 
 
 @router.post("/tasks/{task_id}/start")
-@router.post("/use_cases/task/{task_id}/start")
 async def start_uploaded_task(
     request: Request,
     task_id: str,
@@ -48,47 +46,92 @@ async def start_uploaded_task(
 
 
 @router.post("/tasks")
-@router.post("/use_cases/submit")
-async def submit_generation_task(
+async def submit_generation_task_stream(
     request: Request,
     background_tasks: BackgroundTasks,
-    source_type: str = Form(...),
+    source_type: str = Form("local"),
+    file: Optional[UploadFile] = File(None),
+    context: Optional[str] = Form(None),
+    requirements: Optional[str] = Form(None),
     task_name: Optional[str] = Form(None),
     doc_url: Optional[str] = Form(None),
     manual_title: Optional[str] = Form(None),
     manual_description: Optional[str] = Form(None),
     related_project: Optional[str] = Form(None),
     submitter: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
 ):
     """
-    提交生成任务，立即返回 task_id。
-    前端拿到 task_id 后跳转到任务详情页，通过 SSE 接收实时进度。
+    提交任务并进入后台队列执行：
+    1) 文件大小校验
+    2) 文件类型校验
+    3) 保存到 uploads
+    4) 创建 task + 入队执行（需求分析 -> 用例生成 -> 用例评审）
     """
+    normalized_source = (source_type or "local").strip().lower()
     logger.info(
-        "Submit generation task: source_type={}, file_name={}, submitter={}",
-        source_type,
+        "Submit task: source_type={}, file_name={}",
+        normalized_source,
         file.filename if file else None,
-        submitter,
     )
-    data = await generation_service.submit_generation_task(
-        background_tasks=background_tasks,
-        source_type=source_type,
-        task_name=task_name,
-        doc_url=doc_url,
-        manual_title=manual_title,
-        manual_description=manual_description,
-        related_project=related_project,
-        submitter=submitter,
-        file=file,
-    )
+    if normalized_source == "local":
+        if not file:
+            raise HTTPException(status_code=400, detail="本地文件模式必须上传文件")
+        data = await generation_service.submit_stream_generation_task(
+            background_tasks=background_tasks,
+            file=file,
+            context=context,
+            requirements=requirements,
+            task_name=task_name,
+            submitter=submitter,
+        )
+    else:
+        data = await generation_service.submit_generation_task(
+            background_tasks=background_tasks,
+            source_type=normalized_source,
+            task_name=task_name,
+            doc_url=doc_url,
+            manual_title=manual_title,
+            manual_description=manual_description,
+            related_project=related_project,
+            submitter=submitter,
+            file=file,
+        )
     return success(data, request.state.tid)
 
 
+@router.post("/test-cases/generate")
+async def generate_test_cases_stream_direct(
+    file: UploadFile = File(...),
+    context: Optional[str] = Form(None),
+    requirements: Optional[str] = Form(None),
+):
+    """
+    新版流式接口：
+    1) 文件大小校验
+    2) 文件类型校验
+    3) 保存到 uploads
+    4) 流式返回：需求分析 -> 用例生成 -> 用例评审 -> 最终用例
+    """
+    logger.info("Submit direct stream generation request: file_name={}", file.filename if file else None)
+    prepared = await generation_service.prepare_stream_generation_file(file=file)
+    return StreamingResponse(
+        generation_service.generate_test_cases_stream(
+            file_path=prepared["file_path"],
+            file_name=prepared["file_name"],
+            context=context,
+            requirements=requirements,
+        ),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/tasks/{task_id}/decision")
-@router.post("/use_cases/task/{task_id}/decision")
 @router.get("/tasks/{task_id}/decision")
-@router.get("/use_cases/task/{task_id}/decision")
 async def apply_decision(
     request: Request,
     task_id: str,
@@ -100,7 +143,7 @@ async def apply_decision(
     采纳决策入口（支持钉钉回调链接直接访问）。
     decision: accepted | rejected
     """
-    data = generation_service.apply_task_decision(
+    data = await generation_service.apply_task_decision(
         task_id,
         decision=decision,
         decision_by=by,
@@ -110,10 +153,9 @@ async def apply_decision(
 
 
 @router.get("/tasks/{task_id}/events")
-@router.get("/use_cases/task/{task_id}/stream")
 async def stream_task_progress(task_id: str):
     """SSE 端点：实时推送任务进度更新。"""
-    task = task_manager.get_task(task_id)
+    task = await task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     
@@ -129,14 +171,12 @@ async def stream_task_progress(task_id: str):
 
 
 @router.get("/tasks/{task_id}")
-@router.get("/use_cases/task/{task_id}")
 async def get_task_status(request: Request, task_id: str):
     """获取任务当前状态（轮询备用方案）。"""
-    return success(generation_service.get_task_status(task_id), request.state.tid)
+    return success(await generation_service.get_task_status(task_id), request.state.tid)
 
 
 @router.post("/tasks/{task_id}/retries")
-@router.post("/use_cases/task/{task_id}/retry")
 async def retry_task(request: Request, task_id: str, background_tasks: BackgroundTasks):
     """
     重试任务：复用同一个任务 ID 重置后重新执行。
@@ -147,15 +187,13 @@ async def retry_task(request: Request, task_id: str, background_tasks: Backgroun
 
 
 @router.put("/tasks/{task_id}/review-cases")
-@router.put("/use_cases/task/{task_id}/review-cases")
 async def update_review_cases(request: Request, task_id: str, payload: UpdateReviewCasesRequest):
     """评审后修改测试用例，并删除不采纳的用例。"""
-    data = generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
+    data = await generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
     return success(data, request.state.tid)
 
 
 @router.get("/tasks")
-@router.get("/use_cases/tasks")
 async def list_tasks(
     request: Request,
     page: int = 1,
@@ -167,7 +205,7 @@ async def list_tasks(
     submitter: Optional[str] = None,
 ):
     """获取任务列表（按更新时间倒序）。"""
-    data = generation_service.list_tasks(
+    data = await generation_service.list_tasks(
         page=page,
         page_size=page_size,
         task_name=task_name,
@@ -180,23 +218,20 @@ async def list_tasks(
 
 
 @router.delete("/tasks/{task_id}")
-@router.delete("/use_cases/task/{task_id}")
 async def delete_task(request: Request, task_id: str):
     """删除单个任务。"""
-    data = generation_service.delete_task(task_id)
+    data = await generation_service.delete_task(task_id)
     return success(data, request.state.tid)
 
 
 @router.delete("/tasks")
-@router.delete("/use_cases/tasks")
 async def batch_delete_tasks(request: Request, payload: DeleteTasksRequest):
     """批量删除任务。"""
-    data = generation_service.batch_delete_tasks(payload.task_ids)
+    data = await generation_service.batch_delete_tasks(payload.task_ids)
     return success(data, request.state.tid)
 
 
 @router.post("/tasks/exports/excel")
-@router.post("/use_cases/export/excel")
 async def export_excel(request: ExportRequest):
     """导出测试用例为 Excel 文件"""
     if not request.cases:
@@ -210,7 +245,6 @@ async def export_excel(request: ExportRequest):
 
 
 @router.post("/tasks/exports/xmind")
-@router.post("/use_cases/export/xmind")
 async def export_xmind(request: ExportRequest):
     """导出测试用例为 XMind 文件"""
     if not request.cases:
@@ -224,7 +258,6 @@ async def export_xmind(request: ExportRequest):
 
 
 @router.post("/tasks/sync/ms")
-@router.post("/use_cases/sync/ms")
 async def sync_to_ms(request: Request, payload: SyncRequest):
     """同步测试用例到 MS 测试管理平台"""
     result = await generation_service.sync_to_ms(payload.cases)

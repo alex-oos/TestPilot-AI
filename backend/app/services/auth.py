@@ -4,8 +4,8 @@ import jwt
 from fastapi import HTTPException
 from loguru import logger
 
-from app.core import database
 from app.core.config import settings
+from app.modules.persistence import user_store
 from app.security.password_hasher import hash_password, verify_password
 from app.schemas.user import LoginRequest
 
@@ -20,10 +20,10 @@ def _create_access_token(username: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def authenticate_user(request: LoginRequest) -> dict:
+async def authenticate_user(request: LoginRequest) -> dict:
     logger.info(f"Attempting login for user: {request.username}")
 
-    user = database.get_user_by_username(request.username)
+    user = await user_store.get_user_by_username(request.username)
     if not user:
         logger.warning(f"Failed login attempt for user: {request.username} (not found)")
         raise HTTPException(status_code=401, detail="账号或密码不正确")
@@ -38,7 +38,7 @@ def authenticate_user(request: LoginRequest) -> dict:
 
     if needs_upgrade:
         try:
-            database.update_user_password_hash(request.username, hash_password(request.password))
+            await user_store.update_user_password_hash(request.username, hash_password(request.password))
         except Exception as exc:
             logger.warning(f"Password hash upgrade failed for user {request.username}: {exc}")
 

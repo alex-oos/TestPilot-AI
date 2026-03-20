@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from app.core.database import SessionLocal
-from app.repositories import TaskRepository
+from app.core.database import AsyncSessionLocal
+from app.repositories import TaskTableRepository
 
 
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
@@ -39,18 +39,18 @@ def _safe_pct(numerator: float, denominator: float) -> float:
     return _round1((numerator / denominator) * 100.0)
 
 
-def get_dashboard_overview() -> Dict[str, Any]:
+async def get_dashboard_overview() -> Dict[str, Any]:
     tz = datetime.now().astimezone().tzinfo
     now = datetime.now(tz=tz)
     week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     week_end = week_start + timedelta(days=7)
     prev_week_start = week_start - timedelta(days=7)
 
-    with SessionLocal() as db:
-        total_tasks = TaskRepository.count_tasks(db)
-        status_counts = TaskRepository.count_tasks_by_status(db)
-        source_counts = TaskRepository.count_tasks_by_source_type(db)
-        tasks = TaskRepository.list_tasks_basic(db)
+    async with AsyncSessionLocal() as db:
+        total_tasks = await TaskTableRepository.count_all(db)
+        status_counts = await TaskTableRepository.count_by_status(db)
+        source_counts = await TaskTableRepository.count_by_source_type(db)
+        tasks = await TaskTableRepository.list_all(db)
 
     completed_tasks = int(status_counts.get("completed", 0))
     coverage_rate = _safe_pct(completed_tasks, total_tasks)

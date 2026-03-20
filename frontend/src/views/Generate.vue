@@ -210,19 +210,7 @@ const submit = async () => {
       headers.Authorization = `Bearer ${token}`
     }
 
-    let response
-    try {
-      // 优先使用 RESTful 主路由
-      response = await axios.post('/api/tasks', formData, { headers })
-    } catch (primaryError: any) {
-      // 兼容旧别名路由，避免版本不一致导致提交失败
-      const status = primaryError?.response?.status
-      if (status === 404 || status === 405) {
-        response = await axios.post('/api/use_cases/submit', formData, { headers })
-      } else {
-        throw primaryError
-      }
-    }
+    const response = await axios.post('/api/tasks', formData, { headers })
 
     if (response.data.code === 0) {
       const taskId = response.data?.data?.task_id

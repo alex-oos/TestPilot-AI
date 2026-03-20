@@ -1,14 +1,295 @@
+import io
+import json
+import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
+import docx
+from pypdf import PdfReader
 
 from app.services import task_manager
+from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
 from app.services.exporter import convert_cases_to_mindmap
 from app.services.file_storage import save_uploaded_bytes
 from app.services.ms_sync import sync_cases_to_ms
 from app.services.pipeline import run_generation_pipeline
+from app.services.file_storage import read_uploaded_bytes
+
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {".md", ".txt", ".pdf", ".docx"}
+
+
+def _validate_upload_for_stream(file_name: str, file_size: int) -> str:
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if file_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
+    return ext
+
+
+def _parse_text_from_uploaded_file(file_name: str, file_content: bytes) -> str:
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext in {".md", ".txt"}:
+        return file_content.decode("utf-8", errors="ignore").strip()
+    if ext == ".docx":
+        doc = docx.Document(io.BytesIO(file_content))
+        return "\n".join([p.text for p in doc.paragraphs]).strip()
+    if ext == ".pdf":
+        pdf = PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in pdf.pages:
+            parsed = page.extract_text()
+            if parsed:
+                text += parsed + "\n"
+        return text.strip()
+    return file_content.decode("utf-8", errors="ignore").strip()
+
+
+def _yield_markdown_text(text: str, *, chunk_size: int = 300) -> AsyncGenerator[str, None]:
+    async def _gen() -> AsyncGenerator[str, None]:
+        content = text or ""
+        if not content:
+            return
+        for i in range(0, len(content), chunk_size):
+            yield content[i:i + chunk_size]
+    return _gen()
+
+
+def _cases_to_markdown(cases: list[dict]) -> str:
+    if not cases:
+        return "（无测试用例）"
+    lines = [
+        "| 编号 | 模块 | 用例标题 | 前置条件 | 测试步骤 | 预期结果 | 优先级 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for item in cases:
+        lines.append(
+            "| {id} | {module} | {title} | {precondition} | {steps} | {expected_result} | {priority} |".format(
+                id=str(item.get("id") or ""),
+                module=str(item.get("module") or "").replace("\n", "<br/>"),
+                title=str(item.get("title") or "").replace("\n", "<br/>"),
+                precondition=str(item.get("precondition") or "").replace("\n", "<br/>"),
+                steps=str(item.get("steps") or "").replace("\n", "<br/>"),
+                expected_result=str(item.get("expected_result") or "").replace("\n", "<br/>"),
+                priority=str(item.get("priority") or ""),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _review_to_markdown(review: dict) -> str:
+    if not isinstance(review, dict):
+        return "（无评审结果）"
+    issues = review.get("issues") or []
+    suggestions = review.get("suggestions") or []
+    missing = review.get("missing_scenarios") or []
+    summary = str(review.get("summary") or "")
+    score = str(review.get("quality_score") or "")
+
+    lines = []
+    if summary:
+        lines.append(f"**评审总结**：{summary}")
+    if score:
+        lines.append(f"**质量评分**：{score}")
+    if issues:
+        lines.append("\n**发现问题**")
+        lines.extend([f"- {x}" for x in issues if str(x).strip()])
+    if suggestions:
+        lines.append("\n**优化建议**")
+        lines.extend([f"- {x}" for x in suggestions if str(x).strip()])
+    if missing:
+        lines.append("\n**缺失场景**")
+        for item in missing:
+            if isinstance(item, dict):
+                lines.append(f"- 模块：{item.get('module', '')}；场景：{item.get('scenario', '')}；测试点：{item.get('test_point', '')}")
+            else:
+                lines.append(f"- {item}")
+    return "\n".join(lines) if lines else "（无评审结果）"
+
+
+async def prepare_stream_generation_file(*, file: UploadFile) -> dict:
+    if not file:
+        raise HTTPException(status_code=400, detail="请上传文件")
+    file_content = await file.read()
+    if not file_content:
+        raise HTTPException(status_code=400, detail="上传文件不能为空")
+    file_name = file.filename or "upload.bin"
+    _validate_upload_for_stream(file_name=file_name, file_size=len(file_content))
+    file_id, file_path = save_uploaded_bytes(file_name, file_content)
+    return {"file_id": file_id, "file_path": file_path, "file_name": file_name}
+
+
+async def generate_test_cases_stream(
+    *,
+    file_path: str,
+    file_name: str,
+    context: Optional[str] = None,
+    requirements: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
+    merged_input = _build_merged_input_from_file(
+        file_path=file_path,
+        file_name=file_name,
+        context=context,
+        requirements=requirements,
+    )
+
+    yield "# AI 流式生成开始\n\n"
+    yield "## 1. 需求分析阶段\n\n"
+
+    analysis = await analyze_requirements(merged_input)
+    async for chunk in _yield_markdown_text(analysis):
+        yield chunk
+    yield "\n\n## 2. 测试用例生成阶段\n\n"
+
+    design = await design_test_strategy(analysis)
+    cases = await generate_test_cases(design)
+    cases_markdown = _cases_to_markdown(cases)
+    async for chunk in _yield_markdown_text(cases_markdown):
+        yield chunk
+
+    yield "\n\n## 3. 测试用例评审阶段\n\n"
+    review = await review_test_cases(cases, analysis)
+    review_markdown = _review_to_markdown(review)
+    async for chunk in _yield_markdown_text(review_markdown):
+        yield chunk
+
+    yield "\n\n## 4. 最终测试用例（JSON）\n\n```json\n"
+    final_cases = review.get("reviewed_cases") if isinstance(review, dict) else None
+    output_cases = final_cases if isinstance(final_cases, list) and final_cases else cases
+    async for chunk in _yield_markdown_text(json.dumps(output_cases, ensure_ascii=False, indent=2), chunk_size=500):
+        yield chunk
+    yield "\n```\n\n---\n流式结束\n"
+
+
+def _build_merged_input_from_file(
+    *,
+    file_path: str,
+    file_name: str,
+    context: Optional[str] = None,
+    requirements: Optional[str] = None,
+) -> str:
+    file_content = read_uploaded_bytes(file_path)
+    parsed_text = _parse_text_from_uploaded_file(file_name=file_name, file_content=file_content)
+    if not parsed_text:
+        raise HTTPException(status_code=400, detail="无法从文件中提取有效文本")
+
+    merged_input = parsed_text
+    if context and context.strip():
+        merged_input += f"\n\n补充上下文:\n{context.strip()}"
+    if requirements and requirements.strip():
+        merged_input += f"\n\n额外要求:\n{requirements.strip()}"
+    return merged_input
+
+
+async def _run_stream_pipeline_task(
+    *,
+    task_id: str,
+    file_path: str,
+    file_name: str,
+    context: Optional[str],
+    requirements: Optional[str],
+) -> None:
+    current_phase = "analysis"
+    try:
+        merged_input = _build_merged_input_from_file(
+            file_path=file_path,
+            file_name=file_name,
+            context=context,
+            requirements=requirements,
+        )
+
+        await task_manager.set_task_status(task_id, "running", status_text="需求分析中")
+        await task_manager.update_phase(task_id, "analysis", "running", {"source_text": merged_input})
+
+        analysis = await analyze_requirements(merged_input)
+        design = await design_test_strategy(analysis)
+        await task_manager.update_phase(
+            task_id,
+            "analysis",
+            "completed",
+            {"source_text": merged_input, "analysis": analysis, "design": design},
+        )
+
+        current_phase = "generation"
+        await task_manager.set_task_status(task_id, "running", status_text="用例编写中")
+        await task_manager.update_phase(task_id, "generation", "running")
+        cases = await generate_test_cases(design)
+        await task_manager.update_phase(task_id, "generation", "completed", {"cases": cases})
+        await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(cases))
+
+        current_phase = "review"
+        await task_manager.set_task_status(task_id, "running", status_text="用例评审中")
+        await task_manager.update_phase(task_id, "review", "running")
+        review = await review_test_cases(cases, analysis)
+        await task_manager.update_phase(task_id, "review", "completed", {"review": review})
+
+        current_phase = "notify"
+        await task_manager.update_phase(
+            task_id,
+            "notify",
+            "completed",
+            {"channel": "none", "notified": False, "message": "流式任务未触发钉钉通知"},
+        )
+        await task_manager.set_task_status(task_id, "completed", status_text="任务执行完成")
+    except Exception as exc:
+        await task_manager.update_phase(task_id, current_phase, "failed", error=str(exc))
+        if current_phase == "analysis":
+            await task_manager.set_task_status(task_id, "analysis_failed", error=str(exc), status_text="需求分析异常")
+        elif current_phase == "generation":
+            await task_manager.set_task_status(task_id, "generation_failed", error=str(exc), status_text="用例编写异常")
+        elif current_phase == "review":
+            await task_manager.set_task_status(task_id, "review_failed", error=str(exc), status_text="用例评审异常")
+        else:
+            await task_manager.set_task_status(task_id, "failed", error=str(exc), status_text="执行异常")
+
+
+async def submit_stream_generation_task(
+    *,
+    background_tasks: BackgroundTasks,
+    file: UploadFile,
+    context: Optional[str],
+    requirements: Optional[str],
+    task_name: Optional[str],
+    submitter: Optional[str],
+) -> dict:
+    prepared = await prepare_stream_generation_file(file=file)
+    final_task_name = (task_name or "").strip() or _default_task_name("local", prepared["file_name"], None)
+
+    task_id = await task_manager.create_task(
+        task_name=final_task_name,
+        source_type="local",
+        file_name=prepared["file_name"],
+        file_path=prepared["file_path"],
+        status="queued",
+        status_text="任务已入队，准备执行",
+        submitter=submitter,
+    )
+    await task_manager.update_phase(
+        task_id,
+        "upload",
+        "completed",
+        {
+            "file_id": prepared["file_id"],
+            "file_name": prepared["file_name"],
+            "file_path": prepared["file_path"],
+            "context": context or "",
+            "requirements": requirements or "",
+        },
+    )
+
+    background_tasks.add_task(
+        _run_stream_pipeline_task,
+        task_id=task_id,
+        file_path=prepared["file_path"],
+        file_name=prepared["file_name"],
+        context=context,
+        requirements=requirements,
+    )
+    return {"task_id": task_id, "task_status": "任务已入队"}
 
 
 def _default_task_name(source_type: str, file_name: Optional[str], doc_url: Optional[str]) -> str:
@@ -56,7 +337,7 @@ async def _create_uploaded_task(
     file_id, file_path = save_uploaded_bytes(file_name, file_content)
     final_task_name = (task_name or "").strip() or _default_task_name(source_type, file_name, doc_url)
 
-    task_id = task_manager.create_task(
+    task_id = await task_manager.create_task(
         task_name=final_task_name,
         source_type=source_type,
         doc_url=doc_url,
@@ -66,7 +347,7 @@ async def _create_uploaded_task(
         status_text="文件已上传，待分析",
         submitter=submitter,
     )
-    task_manager.update_phase(
+    await task_manager.update_phase(
         task_id,
         "upload",
         "completed",
@@ -91,7 +372,7 @@ async def start_generation_task(
     background_tasks: BackgroundTasks,
     submitter: Optional[str] = None,
 ) -> dict:
-    task = task_manager.get_task(task_id)
+    task = await task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.get("status") == "running":
@@ -113,7 +394,7 @@ async def start_generation_task(
             submitter=submitter,
         )
 
-    task_manager.set_task_status(task_id, "queued", status_text="任务已入队，准备开始分析")
+    await task_manager.set_task_status(task_id, "queued", status_text="任务已入队，准备开始分析")
     background_tasks.add_task(_run)
     return {"task_id": task_id, "task_status": "任务已启动"}
 
@@ -192,7 +473,7 @@ async def submit_generation_task(
         raise HTTPException(status_code=400, detail="在线文档模式必须提供文档链接")
 
     final_task_name = (task_name or "").strip() or _default_task_name(source_type, None, doc_url)
-    task_id = task_manager.create_task(
+    task_id = await task_manager.create_task(
         task_name=final_task_name,
         source_type=source_type,
         doc_url=doc_url,
@@ -204,14 +485,14 @@ async def submit_generation_task(
     return {"task_id": task_id, "task_status": "需求描述分析中"}
 
 
-def get_task_status(task_id: str) -> dict:
-    task = task_manager.get_task(task_id)
+async def get_task_status(task_id: str) -> dict:
+    task = await task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
 
 
-def list_tasks(
+async def list_tasks(
     *,
     page: int,
     page_size: int,
@@ -221,7 +502,7 @@ def list_tasks(
     status: Optional[str],
     submitter: Optional[str],
 ) -> dict:
-    return task_manager.list_tasks(
+    return await task_manager.list_tasks(
         page=page,
         page_size=page_size,
         task_name=task_name,
@@ -233,7 +514,7 @@ def list_tasks(
 
 
 async def retry_task(*, task_id: str, background_tasks: BackgroundTasks) -> dict:
-    old_task = task_manager.get_task(task_id)
+    old_task = await task_manager.get_task(task_id)
     if not old_task:
         raise HTTPException(status_code=404, detail="原任务不存在")
     if old_task.get("status") == "running":
@@ -245,7 +526,7 @@ async def retry_task(*, task_id: str, background_tasks: BackgroundTasks) -> dict
     file_path = old_task.get("file_path")
 
     status_text = "需求描述分析中" if source_type == "manual" else "本地文件分析中"
-    reset_task = task_manager.reset_task_for_retry(task_id, status_text=status_text)
+    reset_task = await task_manager.reset_task_for_retry(task_id, status_text=status_text)
     if not reset_task:
         raise HTTPException(status_code=404, detail="任务不存在，无法重试")
 
@@ -263,7 +544,7 @@ async def retry_task(*, task_id: str, background_tasks: BackgroundTasks) -> dict
     return {"task_id": task_id, "task_status": "重试任务已提交"}
 
 
-def apply_task_decision(
+async def apply_task_decision(
     task_id: str,
     *,
     decision: str,
@@ -271,11 +552,11 @@ def apply_task_decision(
     decision_note: Optional[str] = None,
 ) -> dict:
     normalized = "accepted" if str(decision).strip().lower() in {"accepted", "accept", "采纳"} else "rejected"
-    task = task_manager.get_task(task_id)
+    task = await task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    ok = task_manager.set_task_decision(
+    ok = await task_manager.set_task_decision(
         task_id,
         decision_status=normalized,
         decision_by=decision_by,
@@ -284,7 +565,7 @@ def apply_task_decision(
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    task_manager.update_phase(
+    await task_manager.update_phase(
         task_id,
         "notify",
         "completed",
@@ -296,8 +577,8 @@ def apply_task_decision(
         },
     )
     status_text = "用户已采纳测试用例" if normalized == "accepted" else "用户未采纳测试用例"
-    task_manager.set_task_status(task_id, "completed", status_text=status_text)
-    updated_task = task_manager.get_task(task_id)
+    await task_manager.set_task_status(task_id, "completed", status_text=status_text)
+    updated_task = await task_manager.get_task(task_id)
     return {
         "task_id": task_id,
         "decision_status": normalized,
@@ -306,23 +587,23 @@ def apply_task_decision(
     }
 
 
-def delete_task(task_id: str) -> dict:
-    deleted = task_manager.delete_task(task_id)
+async def delete_task(task_id: str) -> dict:
+    deleted = await task_manager.delete_task(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"task_id": task_id, "deleted": True}
 
 
-def batch_delete_tasks(task_ids: list[str]) -> dict:
+async def batch_delete_tasks(task_ids: list[str]) -> dict:
     normalized_ids = [x for x in task_ids if str(x).strip()]
     if not normalized_ids:
         raise HTTPException(status_code=400, detail="task_ids 不能为空")
-    deleted_count = task_manager.delete_tasks(normalized_ids)
+    deleted_count = await task_manager.delete_tasks(normalized_ids)
     return {"deleted_count": deleted_count, "requested_count": len(normalized_ids)}
 
 
-def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
-    task = task_manager.get_task(task_id)
+async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
+    task = await task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -352,8 +633,8 @@ def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
     adopted_cases = [item for item in normalized_cases if item.get("adoption_status") == "accepted"]
     rejected_count = len(normalized_cases) - len(adopted_cases)
 
-    task_manager.update_phase(task_id, "generation", "completed", {"cases": adopted_cases})
-    task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(adopted_cases))
+    await task_manager.update_phase(task_id, "generation", "completed", {"cases": adopted_cases})
+    await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(adopted_cases))
 
     review_phase = (task.get("phases") or {}).get("review") or {}
     review_data = review_phase.get("data") or {}
@@ -363,18 +644,18 @@ def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
     review_detail["reviewed_cases"] = normalized_cases
     review_detail["adopted_count"] = len(adopted_cases)
     review_detail["rejected_count"] = rejected_count
-    task_manager.update_phase(task_id, "review", "completed", {"review": review_detail})
+    await task_manager.update_phase(task_id, "review", "completed", {"review": review_detail})
 
     decision_status = "accepted" if rejected_count == 0 else "partially_accepted"
-    task_manager.set_task_decision(
+    await task_manager.set_task_decision(
         task_id,
         decision_status=decision_status,
         decision_by="manual_review",
         decision_note=f"adopted={len(adopted_cases)}, rejected={rejected_count}",
     )
-    task_manager.set_task_status(task_id, "completed", status_text="任务已完成")
+    await task_manager.set_task_status(task_id, "completed", status_text="任务已完成")
 
-    updated_task = task_manager.get_task(task_id)
+    updated_task = await task_manager.get_task(task_id)
     return {
         "task_id": task_id,
         "adopted_count": len(adopted_cases),

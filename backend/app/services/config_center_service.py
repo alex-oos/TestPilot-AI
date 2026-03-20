@@ -1,60 +1,195 @@
 from fastapi import HTTPException
 
 from app.ai.llm import llm_client
-from app.core import database
+from app.modules.persistence import config_center_store
 from app.schemas.config_center import ConfigCenterUpdateRequest, TestModelRequest
 
 
-def get_config_center() -> dict:
-    return database.get_config_center()
+async def get_config_center() -> dict:
+    return await config_center_store.get_config_center()
 
 
-def update_config_center(payload: ConfigCenterUpdateRequest) -> dict:
-    return database.update_config_center(payload.model_dump(exclude_none=True))
+async def update_config_center(payload: ConfigCenterUpdateRequest) -> dict:
+    return await config_center_store.update_config_center(payload.model_dump(exclude_none=True))
 
 
-def get_default_prompts() -> list[dict]:
-    return database.get_default_prompt_configs()
+async def get_default_prompts() -> list[dict]:
+    return await config_center_store.get_default_prompt_configs()
 
 
-def get_ai_model_configs_section() -> dict:
-    return database.get_ai_model_configs_section()
+async def get_ai_model_configs_section() -> dict:
+    return await config_center_store.get_ai_model_configs_section()
 
 
-def update_ai_model_configs_section(payload: dict) -> dict:
-    return database.update_ai_model_configs_section(payload.get("ai_model_configs") or [])
+async def update_ai_model_configs_section(payload: dict) -> dict:
+    return await config_center_store.update_ai_model_configs_section(payload.get("ai_model_configs") or [])
 
 
-def get_role_configs_section() -> dict:
-    return database.get_role_configs_section()
+async def create_ai_model_config_item(payload: dict) -> dict:
+    try:
+        return await config_center_store.create_ai_model_config_item(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def update_role_configs_section(payload: dict) -> dict:
-    return database.update_role_configs_section(payload)
+async def update_ai_model_config_item(config_id: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.update_ai_model_config_item(config_id, payload)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
 
 
-def get_prompt_configs_section() -> dict:
-    return database.get_prompt_configs_section()
+async def delete_ai_model_config_item(config_id: str) -> dict:
+    try:
+        return await config_center_store.delete_ai_model_config_item(config_id)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
 
 
-def update_prompt_configs_section(payload: dict) -> dict:
-    return database.update_prompt_configs_section(payload)
+async def get_role_configs_section() -> dict:
+    return await config_center_store.get_role_configs_section()
 
 
-def get_generation_behavior_configs_section() -> dict:
-    return database.get_generation_behavior_configs_section()
+async def update_role_configs_section(payload: dict) -> dict:
+    return await config_center_store.update_role_configs_section(payload)
 
 
-def update_generation_behavior_configs_section(payload: dict) -> dict:
-    return database.update_generation_behavior_configs_section(payload.get("generation_behavior_configs") or [])
+async def create_role_config_item(payload: dict) -> dict:
+    try:
+        return await config_center_store.create_role_config_item(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def get_notifications_section() -> dict:
-    return database.get_notifications_section()
+async def update_role_config_item(config_id: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.update_role_config_item(config_id, payload)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
 
 
-def update_notifications_section(payload: dict) -> dict:
-    return database.update_notifications_section(payload.get("notifications") or {})
+async def delete_role_config_item(config_id: str) -> dict:
+    try:
+        return await config_center_store.delete_role_config_item(config_id)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def get_prompt_configs_section() -> dict:
+    return await config_center_store.get_prompt_configs_section()
+
+
+async def update_prompt_configs_section(payload: dict) -> dict:
+    return await config_center_store.update_prompt_configs_section(payload)
+
+
+async def create_prompt_config_item(payload: dict) -> dict:
+    try:
+        return await config_center_store.create_prompt_config_item(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def update_prompt_config_item(config_id: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.update_prompt_config_item(config_id, payload)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def delete_prompt_config_item(config_id: str) -> dict:
+    try:
+        return await config_center_store.delete_prompt_config_item(config_id)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def get_generation_behavior_configs_section() -> dict:
+    return await config_center_store.get_generation_behavior_configs_section()
+
+
+async def update_generation_behavior_configs_section(payload: dict) -> dict:
+    return await config_center_store.update_generation_behavior_configs_section(payload.get("generation_behavior_configs") or [])
+
+
+async def create_generation_behavior_config_item(payload: dict) -> dict:
+    try:
+        return await config_center_store.create_generation_behavior_config_item(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def update_generation_behavior_config_item(config_id: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.update_generation_behavior_config_item(config_id, payload)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def delete_generation_behavior_config_item(config_id: str) -> dict:
+    try:
+        return await config_center_store.delete_generation_behavior_config_item(config_id)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def get_notifications_section() -> dict:
+    return await config_center_store.get_notifications_section()
+
+
+async def update_notifications_section(payload: dict) -> dict:
+    return await config_center_store.update_notifications_section(payload.get("notifications") or {})
+
+
+async def create_notification_channel_config(channel: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.create_notification_channel_config(channel, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def update_notification_channel_config(channel: str, payload: dict) -> dict:
+    try:
+        return await config_center_store.update_notification_channel_config(channel, payload)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def delete_notification_channel_config(channel: str) -> dict:
+    try:
+        return await config_center_store.delete_notification_channel_config(channel)
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
 
 
 async def test_model_connection(payload: TestModelRequest) -> dict:

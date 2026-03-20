@@ -8,5 +8,5 @@ router = APIRouter()
 
 @router.get("/dashboard/overview")
 async def get_dashboard_overview(request: Request):
-    data = dashboard_service.get_dashboard_overview()
+    data = await dashboard_service.get_dashboard_overview()
     return success(data, request.state.tid)
