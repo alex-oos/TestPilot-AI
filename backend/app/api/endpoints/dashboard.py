@@ -6,7 +6,7 @@ from app.services import dashboard_service
 router = APIRouter()
 
 
-@router.get("/dashboard/overview")
+@router.get("/dashboard")
 async def get_dashboard_overview(request: Request):
     data = await dashboard_service.get_dashboard_overview()
     return success(data, request.state.tid)
