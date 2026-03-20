@@ -20,14 +20,14 @@ class AppSettings:
     allow_headers: tuple[str, ...] = ("*",)
 
     host: str = "0.0.0.0"
-    port: int = 8081
+    port: int = 8001
     reload: bool = True
 
 
 app_settings = AppSettings(
     version="1.0.0",
     host="0.0.0.0",
-    port=8081,
+    port=8001,
     reload=True,
 )
 
