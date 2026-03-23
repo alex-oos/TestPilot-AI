@@ -22,11 +22,11 @@
 - 数据访问：SQLAlchemy（Async ORM）+ Repository（仓储）层
 - 数据库与驱动：SQLite + aiosqlite（异步）
 - 后端项目思想：分层/模块化组织
-         -  API 层在 `app/api/endpoints`，
-         -  业务逻辑在 `app/services`
-         -  数据操作在 `app/repositories`，
-         -  领域/规则在 `app/modules/domain`，
-         -  并用 `app/core` 统一数据库、日志、中间件等基础能力
+           - API 层在 `app/api/endpoints`，
+           - 业务逻辑在 `app/services`
+           - 数据操作在 `app/repositories`，
+           - 领域/规则在 `app/modules/domain`，
+           - 并用 `app/core` 统一数据库、日志、中间件等基础能力
          整体风格接近“分层架构 + 仓储/领域驱动”的组织方式）
 
 ### 前端
