@@ -99,9 +99,10 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
    npm install
    # 如果在安装 tailwindcss 等核心包时遇到依赖冲突，可以执行:
    # npm install --legacy-peer-deps
-  npm install -g cnpm 
-  cnpm install 
-   # npm 如何安装失败，采用cnpm install 可以
+
+   # npm 如果安装失败，采用cnpm install 可以
+    npm install -g cnpm 
+    cnpm install 
   ```
 
 #### 启动服务
