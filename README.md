@@ -67,6 +67,10 @@
   ```bash
    pip install -r requirements.txt
   ```
+4. 复制配置文件：
+  ```bash
+   cp .env.example .env
+  ```
 
 #### 启动服务
 
@@ -110,6 +114,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 在安装完依赖后，执行以下命令启动开发服务器：
 
 ```bash
+cp .env.example .env
 npm run dev
 ```
 
