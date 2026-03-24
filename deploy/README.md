@@ -4,83 +4,58 @@
 
 ```
 deploy/
-├── docker-compose.yml
+└── scripts/
+    ├── mac/
+    ├── linux/
+    ├── windows/
+    └── docker/
+        ├── docker-compose.yml
+        ├── start.sh
+        └── stop.sh
+
+frontend/
 ├── Dockerfile
-├── .dockerignore
-├── scripts/
-│   ├── mac/
-│   │   ├── start.sh
-│   │   └── stop.sh
-│   ├── linux/
-│   │   ├── start.sh
-│   │   └── stop.sh
-│   ├── windows/
-│   │   ├── start.bat
-│   │   └── stop.bat
-│   └── docker/
-│       ├── start.sh
-│       └── stop.sh
-└── README.md
+└── nginx.conf
+
+backend/
+└── Dockerfile
 ```
 
-## Usage
-
-### 1. Native Deployment (No Docker)
-
-#### Mac
-
-```bash
-cd deploy/scripts/mac
-chmod +x *.sh
-./start.sh      # Start services
-./stop.sh       # Stop services
-```
-
-#### Linux
-
-```bash
-cd deploy/scripts/linux
-chmod +x *.sh
-./start.sh      # Start services
-./stop.sh       # Stop services
-```
-
-#### Windows
-
-```cmd
-cd deploy\scripts\windows
-start.bat       # Start services
-stop.bat        # Stop services
-```
-
-### 2. Docker Deployment
-
-#### All Platforms
+## Docker Deployment (Recommended)
 
 ```bash
 cd deploy/scripts/docker
-chmod +x *.sh
-./start.sh      # Build and start containers
-./stop.sh       # Stop and remove containers
+./start.sh      # Build and start
+./stop.sh       # Stop
 ```
 
-#### Or use docker-compose directly
+### Ports
+
+- **Frontend**: http://localhost:3008
+- **Backend**: http://localhost:8001
+
+## Native Deployment
+
+### Mac
 
 ```bash
-cd deploy
-docker compose up -d      # Start
-docker compose down       # Stop
-docker compose logs -f    # View logs
+cd deploy/scripts/mac
+./start.sh
+./stop.sh
 ```
 
-## Environment Variables
+### Linux
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| BACKEND_PORT | 8001 | Backend server port |
-| FRONTEND_PORT | 3008 | Frontend dev server port |
+```bash
+cd deploy/scripts/linux
+./start.sh
+./stop.sh
+```
 
-## Ports
+### Windows
 
-- **Backend**: http://localhost:8001
-- **Frontend**: http://localhost:3008
+```cmd
+cd deploy\scripts\windows
+start.bat
+stop.bat
+```
