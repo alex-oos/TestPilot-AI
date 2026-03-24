@@ -69,9 +69,20 @@ const initMindMap = () => {
       layout: 'logicalStructure',
     })
     
-    nextTick(() => {
+    mindMapInstance.on('ready', () => {
       if (mindMapInstance?.view) {
         mindMapInstance.view.fit()
+        setTimeout(() => {
+          const rootNode = mindMapInstance.renderer.root
+          if (rootNode) {
+            const box = rootNode._node.data.rect
+            if (box) {
+              const centerX = container.offsetWidth / 2 - box.centerX
+              const centerY = container.offsetHeight / 2 - box.centerY
+              mindMapInstance.view.translateXY(centerX, centerY)
+            }
+          }
+        }, 100)
       }
     })
   } catch (error) {
@@ -123,13 +134,11 @@ const exportXmind = async () => {
       return
     }
     ElMessage.info('正在生成 XMind 文件...')
-    const blob = await mindMapInstance.export('xmind', '测试用例')
-    const url = URL.createObjectURL(blob)
+    const dataUrl = await mindMapInstance.export('xmind', '测试用例')
     const a = document.createElement('a')
-    a.href = url
+    a.href = dataUrl
     a.download = '测试用例.xmind'
     a.click()
-    URL.revokeObjectURL(url)
     ElMessage.success('XMind 文件已生成')
   } catch (error) {
     console.error('导出失败:', error)
