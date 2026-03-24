@@ -15,5 +15,8 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  optimizeDeps: {
+    include: ['simple-mind-map', 'simple-mind-map/full']
   }
 })

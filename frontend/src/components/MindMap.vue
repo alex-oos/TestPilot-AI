@@ -4,6 +4,7 @@
       <el-button size="small" @click="zoomIn">🔍 放大</el-button>
       <el-button size="small" @click="zoomOut">🔎 缩小</el-button>
       <el-button size="small" @click="fit">适应屏幕</el-button>
+      <el-button size="small" @click="resetView">重置视图</el-button>
       <el-button size="small" @click="exportXmind">📥 导出 XMind</el-button>
     </div>
     <div ref="mindmapContainer" class="mindmap-container"></div>
@@ -11,9 +12,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onUnmounted, watch } from 'vue'
+import { ref, onUnmounted, watch, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import MindMap from 'simple-mind-map'
+import MindMap from 'simple-mind-map/full'
+import 'simple-mind-map/dist/simpleMindMap.esm.css'
 
 export interface MindMapNode {
   content: string
@@ -34,7 +36,6 @@ const props = defineProps<{
 const mindmapContainer = ref<HTMLElement | null>(null)
 let mindMapInstance: any = null
 
-// 转换数据格式
 const convertData = (node: MindMapNode): any => {
   return {
     data: {
@@ -45,106 +46,110 @@ const convertData = (node: MindMapNode): any => {
   }
 }
 
-// 初始化思维导图
 const initMindMap = () => {
-  if (!props.data || !mindmapContainer.value) return
+  if (!props.data) return
+  if (!mindmapContainer.value) return
   
-  // 销毁旧实例
-  if (mindMapInstance) {
-    mindMapInstance.destroy()
+  const container = mindmapContainer.value
+  if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+    setTimeout(() => initMindMap(), 300)
+    return
   }
   
-  // 创建新实例
+  if (mindMapInstance) {
+    mindMapInstance.destroy()
+    mindMapInstance = null
+  }
+  
   try {
     mindMapInstance = new (MindMap as any)({
-      el: mindmapContainer.value,
+      el: container,
       data: convertData(props.data),
       theme: 'avocado',
       layout: 'logicalStructure',
-      fit: true,
     })
     
-    console.log('[MindMap] 实例创建成功')
+    nextTick(() => {
+      if (mindMapInstance?.view) {
+        mindMapInstance.view.fit()
+      }
+    })
   } catch (error) {
-    console.error('[MindMap] 实例创建失败:', error)
-    ElMessage.error('思维导图加载失败')
+    console.error('[MindMap] 创建失败:', error)
+    ElMessage.error('思维导图加载失败: ' + (error as Error).message)
   }
 }
 
-// 放大
 const zoomIn = () => {
   if (!mindMapInstance) {
     ElMessage.warning('思维导图还未加载')
     return
   }
-  const scale = mindMapInstance.view.getScale()
-  mindMapInstance.view.setTransform(null, null, scale + 0.2)
-  ElMessage.success('已放大')
+  mindMapInstance.view.enlarge()
 }
 
-// 缩小
 const zoomOut = () => {
   if (!mindMapInstance) {
     ElMessage.warning('思维导图还未加载')
     return
   }
-  const scale = mindMapInstance.view.getScale()
-  const newScale = Math.max(0.1, scale - 0.2)
-  mindMapInstance.view.setTransform(null, null, newScale)
-  ElMessage.success('已缩小')
+  mindMapInstance.view.narrow()
 }
 
-// 适应屏幕
 const fit = () => {
   if (!mindMapInstance) {
     ElMessage.warning('思维导图还未加载')
     return
   }
-  mindMapInstance.fit()
-  ElMessage.success('已适应屏幕')
+  mindMapInstance.view.fit()
 }
 
-// 导出 XMind
-const exportXmind = () => {
+const resetView = () => {
+  if (!mindMapInstance) {
+    ElMessage.warning('思维导图还未加载')
+    return
+  }
+  mindMapInstance.view.reset()
+}
+
+const exportXmind = async () => {
   if (!mindMapInstance) {
     ElMessage.warning('思维导图还未加载')
     return
   }
   try {
+    if (!mindMapInstance.doExportXMind) {
+      ElMessage.error('导出插件未注册')
+      return
+    }
     ElMessage.info('正在生成 XMind 文件...')
-    mindMapInstance.export('xmind', '测试用例')
+    const blob = await mindMapInstance.export('xmind', '测试用例')
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '测试用例.xmind'
+    a.click()
+    URL.revokeObjectURL(url)
     ElMessage.success('XMind 文件已生成')
   } catch (error) {
     console.error('导出失败:', error)
-    ElMessage.error('导出 XMind 失败')
+    ElMessage.error('导出 XMind 失败: ' + (error as Error).message)
   }
 }
 
-// 监听数据变化
-watch(() => props.data, (newData) => {
-  console.log('[MindMap] 数据变化:', newData ? '有数据' : '无数据')
-  if (newData && mindmapContainer.value) {
-    // 等待 DOM 更新后再初始化
-    setTimeout(() => {
-      initMindMap()
-    }, 100)
+watch(() => props.data, async (newData) => {
+  if (newData) {
+    await nextTick()
+    setTimeout(() => initMindMap(), 100)
   }
 }, { immediate: false })
 
-// 组件挂载时如果有数据则初始化
-watch(
-  () => ({ data: props.data, container: mindmapContainer.value }),
-  ({ data, container }) => {
-    if (data && container && !mindMapInstance) {
-      setTimeout(() => {
-        initMindMap()
-      }, 200)
-    }
-  },
-  { immediate: true }
-)
+onMounted(() => {
+  if (props.data) {
+    setTimeout(() => initMindMap(), 200)
+  }
+})
 
-// 组件卸载时清理
 onUnmounted(() => {
   if (mindMapInstance) {
     mindMapInstance.destroy()
@@ -156,9 +161,10 @@ onUnmounted(() => {
 <style scoped>
 .mindmap-wrapper {
   width: 100%;
-  height: 100%;
+  height: 800px;
   display: flex;
   flex-direction: column;
+  background: #ffffff;
 }
 
 .mindmap-toolbar {
@@ -168,6 +174,7 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .mindmap-container {
