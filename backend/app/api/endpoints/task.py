@@ -4,8 +4,10 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from loguru import logger
 from app.core.response import success
-from app.services import generation_service
+from app.services import file_service
+from app.services import task_service
 from app.services import task_manager
+from app.services import test_case_generation_service
 from app.services.exporter import export_cases_to_excel
 from app.services.xmind_exporter import generate_xmind_file
 from app.schemas.use_case import SyncRequest, ExportRequest, DeleteTasksRequest, UpdateReviewCasesRequest
@@ -21,7 +23,7 @@ async def upload_local_file(
     submitter: Optional[str] = Form(None),
 ):
     """仅上传本地文件到后台，不立即执行分析。"""
-    data = await generation_service.upload_local_file_task(
+    data = await file_service.upload_local_file_task(
         file=file,
         task_name=task_name,
         submitter=submitter,
@@ -37,7 +39,7 @@ async def start_uploaded_task(
     submitter: Optional[str] = Form(None),
 ):
     """启动已上传任务，进入 AI 需求分析流水线。"""
-    data = await generation_service.start_generation_task(
+    data = await test_case_generation_service.start_generation_task(
         task_id=task_id,
         background_tasks=background_tasks,
         submitter=submitter,
@@ -77,7 +79,7 @@ async def submit_generation_task_stream(
     if normalized_source == "local":
         if not file:
             raise HTTPException(status_code=400, detail="本地文件模式必须上传文件")
-        data = await generation_service.submit_stream_generation_task(
+        data = await test_case_generation_service.submit_stream_generation_task(
             background_tasks=background_tasks,
             file=file,
             context=context,
@@ -86,7 +88,7 @@ async def submit_generation_task_stream(
             submitter=submitter,
         )
     else:
-        data = await generation_service.submit_generation_task(
+        data = await test_case_generation_service.submit_generation_task(
             background_tasks=background_tasks,
             source_type=normalized_source,
             task_name=task_name,
@@ -114,9 +116,9 @@ async def generate_test_cases_stream_direct(
     4) 流式返回：需求分析 -> 用例生成 -> 用例评审 -> 最终用例
     """
     logger.info("Submit direct stream generation request: file_name={}", file.filename if file else None)
-    prepared = await generation_service.prepare_stream_generation_file(file=file)
+    prepared = await file_service.prepare_stream_generation_file(file=file)
     return StreamingResponse(
-        generation_service.generate_test_cases_stream(
+        test_case_generation_service.generate_test_cases_stream(
             file_path=prepared["file_path"],
             file_name=prepared["file_name"],
             context=context,
@@ -144,7 +146,7 @@ async def apply_decision(
     采纳决策入口（支持钉钉回调链接直接访问）。
     decision: accepted | rejected
     """
-    data = await generation_service.apply_task_decision(
+    data = await test_case_generation_service.apply_task_decision(
         task_id,
         decision=decision,
         decision_by=by,
@@ -174,7 +176,7 @@ async def stream_task_progress(task_id: str):
 @router.get("/tasks/{task_id}")
 async def get_task_status(request: Request, task_id: str):
     """获取任务当前状态（轮询备用方案）。"""
-    return success(await generation_service.get_task_status(task_id), request.state.tid)
+    return success(await task_service.get_task_status(task_id), request.state.tid)
 
 
 @router.post("/tasks/{task_id}/retries")
@@ -183,14 +185,14 @@ async def retry_task(request: Request, task_id: str, background_tasks: Backgroun
     重试任务：复用同一个任务 ID 重置后重新执行。
     本地文件任务会复用历史保存的 source_text。
     """
-    data = await generation_service.retry_task(task_id=task_id, background_tasks=background_tasks)
+    data = await test_case_generation_service.retry_task(task_id=task_id, background_tasks=background_tasks)
     return success(data, request.state.tid)
 
 
 @router.put("/tasks/{task_id}/review-cases")
 async def update_review_cases(request: Request, task_id: str, payload: UpdateReviewCasesRequest):
     """评审后修改测试用例，并删除不采纳的用例。"""
-    data = await generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
+    data = await test_case_generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
     return success(data, request.state.tid)
 
 
@@ -206,7 +208,7 @@ async def list_tasks(
     submitter: Optional[str] = None,
 ):
     """获取任务列表（按更新时间倒序）。"""
-    data = await generation_service.list_tasks(
+    data = await task_service.list_tasks(
         page=page,
         page_size=page_size,
         task_name=task_name,
@@ -221,14 +223,14 @@ async def list_tasks(
 @router.delete("/tasks/{task_id}")
 async def delete_task(request: Request, task_id: str):
     """删除单个任务。"""
-    data = await generation_service.delete_task(task_id)
+    data = await task_service.delete_task(task_id)
     return success(data, request.state.tid)
 
 
 @router.delete("/tasks")
 async def batch_delete_tasks(request: Request, payload: DeleteTasksRequest):
     """批量删除任务。"""
-    data = await generation_service.batch_delete_tasks(payload.task_ids)
+    data = await task_service.batch_delete_tasks(payload.task_ids)
     return success(data, request.state.tid)
 
 
@@ -261,7 +263,7 @@ async def export_xmind(request: ExportRequest):
 @router.post("/tasks/sync/ms")
 async def sync_to_ms(request: Request, payload: SyncRequest):
     """同步测试用例到 MS 测试管理平台"""
-    result = await generation_service.sync_to_ms(payload.cases)
+    result = await test_case_generation_service.sync_to_ms(payload.cases)
     return success(result, request.state.tid)
 
 

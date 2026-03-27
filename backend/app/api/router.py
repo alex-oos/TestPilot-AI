@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import login, test_case_generate, config_center, dashboard
+from app.api.endpoints import login, task, config_center, dashboard
 
 api_router = APIRouter()
 api_router.include_router(login.router, tags=["Authentication"])

@@ -1,4 +1,4 @@
-from app.api.endpoints import config_center, dashboard, test_case_generate, login
+from app.api.endpoints import config_center, dashboard, task, login
 
 
 urlpatterns = [
