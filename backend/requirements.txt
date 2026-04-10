@@ -48,6 +48,7 @@ aiosqlite==0.22.1
 pandas==3.0.1
 pypdf==6.9.1
 python-docx==1.2.0
+chromadb==1.1.1
 
 # 仅 Linux/Mac 使用（避免在 Windows 安装时触发 uvloop 的不支持报错）
 uvloop==0.22.1; sys_platform != "win32"
