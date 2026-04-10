@@ -64,3 +64,6 @@ Thumbs.db
 
 # Vector database
 chroma_db/
+
+# Temporary output files
+output.png
