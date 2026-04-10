@@ -78,6 +78,21 @@
         <el-table-column label="最后更新" min-width="190">
           <template #default="scope">{{ formatTime(scope.row.updated_at) }}</template>
         </el-table-column>
+        <el-table-column label="飞书文档" min-width="220" show-overflow-tooltip>
+          <template #default="scope">
+            <a
+              v-if="scope.row.feishu_mindmap_url"
+              :href="scope.row.feishu_mindmap_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-indigo-600 hover:text-indigo-800 hover:underline"
+              @click.stop
+            >
+              打开文档
+            </a>
+            <span v-else class="text-gray-400">未生成</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="220" align="center">
           <template #default="scope">
             <el-button link type="primary" @click.stop="goDetail(scope.row)">查看详情</el-button>

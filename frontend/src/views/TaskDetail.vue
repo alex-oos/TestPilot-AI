@@ -79,6 +79,29 @@
         </div>
 
         <div v-if="selectedStage === 'analysis'" class="space-y-4">
+          <div class="rounded-xl border border-amber-100 bg-amber-50/40 p-4">
+            <p class="text-sm font-semibold text-amber-700 mb-3">需求分析子节点（实时）</p>
+            <div v-if="analysisSubSteps.length" class="space-y-2">
+              <div
+                v-for="item in analysisSubSteps"
+                :key="item.key"
+                class="flex items-center justify-between rounded-lg border border-amber-100 bg-white px-3 py-2"
+              >
+                <span class="text-sm text-slate-700">{{ item.label }}</span>
+                <div class="flex items-center gap-2">
+                  <span
+                    v-if="item.status === 'running'"
+                    class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin inline-block"
+                  ></span>
+                  <el-tag :type="subStepTagType(item.status)" effect="light" size="small" round>
+                    {{ phaseStatusLabel(item.status) }}
+                  </el-tag>
+                </div>
+              </div>
+            </div>
+            <p v-else class="text-sm text-slate-500">等待子节点状态...</p>
+          </div>
+
           <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
             <p class="text-sm font-semibold text-slate-700 mb-2">需求内容</p>
             <pre class="whitespace-pre-wrap text-sm text-slate-700 leading-6 font-sans">{{ sourceRequirementText || '等待需求解析内容...' }}</pre>
@@ -435,6 +458,12 @@ const designText = computed(() => {
   return ''
 })
 
+const analysisSubSteps = computed<any[]>(() => {
+  const data = task.value.phases?.analysis?.data
+  if (!data || typeof data !== 'object' || !Array.isArray(data.sub_steps)) return []
+  return data.sub_steps
+})
+
 const review = computed(() => {
   const data = task.value.phases?.review?.data
   if (data && typeof data === 'object') return data.review ?? {}
@@ -604,6 +633,13 @@ function stageTextClass(status: string) {
   if (status === 'completed') return 'text-emerald-600'
   if (status === 'running') return 'text-indigo-600'
   return 'text-slate-400'
+}
+
+function subStepTagType(status: string) {
+  if (status === 'completed') return 'success'
+  if (status === 'running') return 'primary'
+  if (status === 'failed') return 'danger'
+  return 'info'
 }
 
 function canSelectStage(stage: any) {
