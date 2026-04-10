@@ -7,6 +7,7 @@ from app.models import Task, User
 
 
 class TaskTableRepository:
+    HIDDEN_STATUSES = {"quality_blocked"}
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -39,6 +40,7 @@ class TaskTableRepository:
             decision_at=None,
             error=None,
             mindmap=None,
+            feishu_mindmap_url=None,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -72,6 +74,8 @@ class TaskTableRepository:
             stmt = stmt.where(Task.source_type == source_type)
         if status:
             stmt = stmt.where(Task.status == status)
+        else:
+            stmt = stmt.where(Task.status.notin_(tuple(TaskTableRepository.HIDDEN_STATUSES)))
         if submitter:
             stmt = stmt.where(User.username.like(f"%{submitter}%"))
 
