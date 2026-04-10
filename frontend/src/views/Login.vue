@@ -1,11 +1,12 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-100 relative overflow-hidden">
+  <div class="min-h-screen flex flex-col bg-gradient-to-br from-indigo-50 to-blue-100 relative overflow-hidden">
     <!-- Decorative background elements -->
     <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob"></div>
     <div class="absolute top-[-10%] right-[-10%] w-96 h-96 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-2000"></div>
     <div class="absolute bottom-[-20%] left-[20%] w-96 h-96 bg-pink-300 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-4000"></div>
 
-    <div class="z-10 bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl overflow-hidden flex max-w-4xl w-full border border-white/40">
+    <div class="flex-1 flex items-center justify-center">
+      <div class="z-10 bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl overflow-hidden flex max-w-4xl w-full border border-white/40">
       
       <!-- Left side: Illustration / Details -->
       <div class="w-1/2 p-12 bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex flex-col justify-center relative hidden md:flex">
@@ -23,8 +24,8 @@
         </div>
       </div>
 
-      <!-- Right side: Login Form -->
-      <div class="w-full md:w-1/2 p-12 flex flex-col justify-center">
+        <!-- Right side: Login Form -->
+        <div class="w-full md:w-1/2 p-12 flex flex-col justify-center">
         <div class="mb-10 text-center md:text-left">
           <h1 class="text-3xl font-bold text-gray-900 mb-2">欢迎回来</h1>
           <p class="text-gray-500">登录 AI 测试平台</p>
@@ -65,9 +66,14 @@
             登录
           </el-button>
         </el-form>
+        </div>
       </div>
     </div>
-  </div>
+
+    <footer class="h-10 text-gray-600 text-sm flex items-center justify-center z-10">
+      2026 ALex 版权所有
+    </footer>
+    </div>
 </template>
 
 <script setup lang="ts">

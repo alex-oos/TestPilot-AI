@@ -101,7 +101,7 @@
                 <div class="upload-content">
                   <div class="upload-folder-icon">📁</div>
                   <p class="upload-main-text">拖拽文件到此处或点击选择文件</p>
-                  <p class="upload-sub-text">支持 PDF、Word、TXT、Markdown、JSON、YAML 格式</p>
+                  <p class="upload-sub-text">支持 PDF、Word、TXT、Markdown、JSON、YAML、PNG、JPG、JPEG、WEBP、BMP、GIF（图片自动识别）</p>
                   <el-button type="primary" color="#3b95d9" class="upload-select-btn">选择文件</el-button>
                   <div v-if="selectedFile" class="upload-selected-text">
                     已选择：{{ selectedFile.name }}
@@ -150,7 +150,7 @@ const isSubmitting = ref(false)
 const selectedFile = ref<File | null>(null)
 
 const genForm = reactive({
-  sourceType: 'local',
+  sourceType: 'feishu',
   docUrl: '',
   manualTitle: '',
   manualDescription: '',
