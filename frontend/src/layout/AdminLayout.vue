@@ -129,6 +129,9 @@
           </transition>
         </router-view>
       </main>
+      <footer class="h-10 border-t border-gray-200 bg-white text-gray-500 text-sm flex items-center justify-center">
+        2026 ALex 版权所有
+      </footer>
     </div>
     
   </div>
