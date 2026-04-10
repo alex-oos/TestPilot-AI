@@ -140,15 +140,38 @@ def _extract_first_json_value_text(text: str) -> str:
     raise ValueError("未找到可解析的 JSON 内容")
 
 
-def _extract_cases_payload(data: Any) -> Any:
+def _looks_like_case_obj(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    keys = set(item.keys())
+    expected = {"id", "module", "title", "precondition", "steps", "test_steps", "expected_result", "priority"}
+    return bool(keys & expected)
+
+
+def _find_case_list_deep(data: Any) -> Any:
     if isinstance(data, list):
+        if data and any(_looks_like_case_obj(item) for item in data):
+            return data
+        for item in data:
+            found = _find_case_list_deep(item)
+            if isinstance(found, list):
+                return found
         return data
     if isinstance(data, dict):
-        for key in ("test_cases", "cases", "items", "data", "result"):
+        for key in ("test_cases", "cases", "items", "data", "result", "payload", "output"):
             value = data.get(key)
-            if isinstance(value, list):
-                return value
+            found = _find_case_list_deep(value)
+            if isinstance(found, list):
+                return found
+        for value in data.values():
+            found = _find_case_list_deep(value)
+            if isinstance(found, list):
+                return found
     return data
+
+
+def _extract_cases_payload(data: Any) -> Any:
+    return _find_case_list_deep(data)
 
 
 def _parse_cases_payload(text: str) -> List[Dict[str, Any]]:
@@ -281,23 +304,79 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
     if not isinstance(cases, list):
         raise ValueError("LLM 返回内容不是数组")
 
+    def _normalize_title(raw_title: str, idx: int) -> str:
+        title = str(raw_title or "").strip()
+        if not title:
+            title = f"验证功能点{idx}"
+        if not title.startswith("验证"):
+            title = re.sub(r"^[：:：\-—_\s]+", "", title)
+            title = f"验证{title}"
+        return title
+
+    def _derive_module(raw_module: str, title: str, steps: str, idx: int) -> str:
+        module = str(raw_module or "").strip()
+        if module and module not in {"通用", "默认", "general", "General"}:
+            return module
+        text = f"{title}\n{steps}"
+        mapping = [
+            ("灰度", "灰度控制"),
+            ("白名单", "灰度白名单"),
+            ("广告策略", "广告策略模板"),
+            ("展示位", "展示位配置"),
+            ("广告单元", "广告单元配置"),
+            ("漏斗", "漏斗分析"),
+            ("收益", "收益分析"),
+            ("用户分析", "用户分析"),
+            ("ab", "AB Test"),
+            ("看板", "数据看板"),
+            ("导出", "导出能力"),
+            ("权限", "权限与角色"),
+        ]
+        lower = text.lower()
+        for keyword, module_name in mapping:
+            if keyword in lower:
+                return module_name
+        return f"功能模块{idx}"
+
     normalized: List[Dict[str, Any]] = []
     for idx, item in enumerate(cases, start=1):
         if not isinstance(item, dict):
             continue
+        raw_steps = item.get("steps")
+        if not raw_steps:
+            raw_steps = item.get("test_steps")
+        if isinstance(raw_steps, list):
+            raw_steps = "\n".join([str(s).strip() for s in raw_steps if str(s).strip()])
+        elif raw_steps is None:
+            raw_steps = ""
+        raw_expected = (
+            item.get("expected_result")
+            or item.get("expected")
+            or item.get("expectedResult")
+            or item.get("expected_results")
+            or item.get("result")
+            or item.get("assertion")
+        )
+        if isinstance(raw_expected, list):
+            raw_expected = "\n".join([str(s).strip() for s in raw_expected if str(s).strip()])
+        elif raw_expected is None:
+            raw_expected = ""
         raw_id = item.get("id")
         try:
             case_id = int(raw_id)
         except Exception:
             case_id = idx
+        title = _normalize_title(str(item.get("title") or ""), idx)
+        steps = str(raw_steps or "")
+        module = _derive_module(str(item.get("module") or ""), title, steps, idx)
         normalized.append(
             {
                 "id": case_id,
-                "module": str(item.get("module") or "通用"),
-                "title": str(item.get("title") or f"测试用例{idx}"),
+                "module": module,
+                "title": title,
                 "precondition": str(item.get("precondition") or "无"),
-                "steps": str(item.get("steps") or ""),
-                "expected_result": str(item.get("expected_result") or ""),
+                "steps": steps,
+                "expected_result": str(raw_expected or ""),
                 "priority": str(item.get("priority") or "中"),
             }
         )
@@ -305,6 +384,34 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
     if not normalized:
         raise ValueError("LLM 返回数组为空或字段无效")
     return normalized
+
+
+def _count_blank_case_fields(cases: List[Dict[str, Any]]) -> Dict[str, int]:
+    blank_steps = sum(1 for c in cases if not str(c.get("steps") or "").strip())
+    blank_expected = sum(1 for c in cases if not str(c.get("expected_result") or "").strip())
+    return {
+        "total": len(cases),
+        "blank_steps": blank_steps,
+        "blank_expected": blank_expected,
+    }
+
+
+def _needs_case_repair(cases: List[Dict[str, Any]]) -> bool:
+    stats = _count_blank_case_fields(cases)
+    total = max(1, stats["total"])
+    return (stats["blank_steps"] / total) > 0.4 or (stats["blank_expected"] / total) > 0.4
+
+
+def _fill_case_blanks(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    patched: List[Dict[str, Any]] = []
+    for case in cases:
+        item = dict(case)
+        if not str(item.get("steps") or "").strip():
+            item["steps"] = "1. 执行该功能对应的核心操作。\n2. 校验系统返回与页面表现是否符合需求。"
+        if not str(item.get("expected_result") or "").strip():
+            item["expected_result"] = "系统行为符合需求与测试策略定义，无异常报错。"
+        patched.append(item)
+    return patched
 
 
 def _normalize_role(role: str) -> str:
@@ -451,16 +558,46 @@ async def design_test_strategy(analysis_result: str) -> str:
     return design_result
 
 
-async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
+async def generate_test_cases(design_result: str, historical_requirements_context: str = "") -> List[Dict[str, Any]]:
     """AI Module - Generating Test Cases"""
     logger.info("AI Module: Generating Test Cases via LLM")
+    history_context = str(historical_requirements_context or "").strip()
     
     role_cfg = (await _load_role_config())["generation"]
-    system_prompt = role_cfg["prompt"]
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"测试策略如下：\n\n{design_result}"}
-    ]
+    system_prompt = (
+        f"{role_cfg['prompt']}\n\n"
+        "Output contract: always return valid json only, with key `cases` as an array. "
+        "Each case must include non-empty fields: title, steps, expected_result. "
+        "Do not leave steps or expected_result empty."
+    )
+    if history_context:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "【历史相似需求（优先参考）】\n"
+                    f"{history_context}\n\n"
+                    "【当前需求测试策略】\n"
+                    f"{design_result}\n\n"
+                    "要求：生成的测试用例需体现对历史相似需求的复用与补充。"
+                    "请直接返回合法json对象，包含cases数组字段。每条用例必须有非空 steps 和 expected_result。"
+                ),
+            },
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "【当前需求测试策略】\n"
+                    f"{design_result}\n\n"
+                    "当前没有历史相似需求可参考，请基于当前策略完整生成测试用例，覆盖正常、异常与边界场景。"
+                    "请直接返回合法json对象，包含cases数组字段。每条用例必须有非空 steps 和 expected_result。"
+                ),
+            },
+        ]
 
     cases_json_str = await llm_client.chat(
         messages=messages,
@@ -511,6 +648,46 @@ async def generate_test_cases(design_result: str) -> List[Dict[str, Any]]:
             )
             raise RuntimeError("测试用例生成结果解析失败：模型未返回合法 JSON") from repair_error
 
+    if _needs_case_repair(cases):
+        logger.warning("Generated cases have too many blank fields, trying one refinement pass.")
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是测试用例补全助手。请基于用户给出的策略与初稿用例，补全每条用例的 steps 与 expected_result。"
+                    "必须返回 JSON 对象，包含 cases 数组。"
+                    "cases 中每个元素都必须包含非空字段：id,module,title,precondition,steps,expected_result,priority。"
+                    "禁止返回空字符串。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"【测试策略】\n{design_result}\n\n"
+                    f"【初稿用例】\n{json.dumps(cases, ensure_ascii=False, indent=2)}"
+                ),
+            },
+        ]
+        repaired_cases_raw = await llm_client.chat(
+            messages=repair_messages,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            model=role_cfg["model"],
+            api_key=role_cfg.get("api_key"),
+            base_url=role_cfg.get("base_url"),
+            max_tokens=role_cfg.get("max_tokens"),
+            top_p=role_cfg.get("top_p"),
+        )
+        _raise_if_llm_error(repaired_cases_raw, "测试用例补全")
+        try:
+            cases = _parse_cases_payload(repaired_cases_raw)
+        except Exception as repair_parse_error:
+            logger.warning("Refined cases parse failed, keep original: {}", repair_parse_error)
+
+    if _needs_case_repair(cases):
+        logger.warning("Cases still contain blanks after refinement, apply safe fallback text.")
+        cases = _fill_case_blanks(cases)
+
     logger.success(f"Generated {len(cases)} test cases.")
     return cases
 
@@ -522,7 +699,10 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
     cases_summary = json.dumps(cases, ensure_ascii=False, indent=2)
     
     role_cfg = (await _load_role_config())["review"]
-    system_prompt = role_cfg["prompt"]
+    system_prompt = (
+        f"{role_cfg['prompt']}\n\n"
+        "Output contract: always return valid json only."
+    )
     
     user_content = f"""【需求分析结果】：
 {analysis}
