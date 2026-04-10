@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import tempfile
+import uuid
 from typing import List, Dict, Any, Optional
 
 from loguru import logger
@@ -111,32 +112,51 @@ async def read_feishu_doc(doc_url: str) -> str:
         timeout_seconds=settings.MCP_REQUEST_TIMEOUT_SECONDS,
     )
 
-def _build_mindmap_markdown(cases: List[Dict[str, Any]], title: str) -> str:
-    lines = [
-        f"## {title}",
-        "",
-        "- 测试用例思维导图",
-    ]
-    for item in cases:
-        case_id = str(item.get("id") or "").strip() or "NA"
-        case_title = str(item.get("title") or "未命名用例").strip()
-        module = str(item.get("module") or "通用").strip()
-        priority = str(item.get("priority") or "中").strip()
-        precondition = str(item.get("precondition") or "无").strip()
-        expected_result = str(item.get("expected_result") or "").strip()
-        steps = str(item.get("steps") or "").strip().splitlines()
-        steps = [s.strip() for s in steps if s.strip()]
+def _sanitize_mermaid_text(value: str, *, fallback: str = "未命名") -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    # Mermaid mindmap plain node text: remove line breaks and brackets that easily break parsing.
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = text.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or fallback
 
-        lines.append(f"  - [{case_id}] {case_title}")
-        lines.append(f"    - 模块：{module}")
-        lines.append(f"    - 优先级：{priority}")
-        lines.append(f"    - 前置条件：{precondition}")
-        if steps:
-            lines.append("    - 测试步骤")
-            for step in steps[:8]:
-                lines.append(f"      - {step}")
-        if expected_result:
-            lines.append(f"    - 预期结果：{expected_result}")
+
+def _build_mindmap_mermaid(cases: List[Dict[str, Any]], title: str) -> str:
+    root = _sanitize_mermaid_text(title, fallback="测试用例")
+    module_map: dict[str, list[Dict[str, Any]]] = {}
+    for item in cases:
+        module = _sanitize_mermaid_text(item.get("module") or "通用", fallback="通用")
+        module_map.setdefault(module, []).append(item)
+
+    lines = [
+        "mindmap",
+        f"  root(({root}))",
+    ]
+    for module_name, module_cases in module_map.items():
+        lines.append(f"    {module_name}")
+        for item in module_cases:
+            case_id = str(item.get("id") or "").strip()
+            case_title = _sanitize_mermaid_text(item.get("title") or "未命名用例", fallback="未命名用例")
+            prefix = f"用例{case_id} " if case_id else ""
+            lines.append(f"      {prefix}{case_title}")
+
+            priority = _sanitize_mermaid_text(item.get("priority") or "中", fallback="中")
+            precondition = _sanitize_mermaid_text(item.get("precondition") or "无", fallback="无")
+            lines.append(f"        优先级: {priority}")
+            lines.append(f"        前置条件: {precondition}")
+
+            steps = str(item.get("steps") or "").strip().splitlines()
+            steps = [_sanitize_mermaid_text(step, fallback="") for step in steps if str(step).strip()]
+            if steps:
+                lines.append("        测试步骤")
+                for idx, step in enumerate(steps[:8], start=1):
+                    lines.append(f"          {idx}. {step}")
+
+            expected_result = _sanitize_mermaid_text(item.get("expected_result") or "", fallback="")
+            if expected_result:
+                lines.append(f"        预期结果: {expected_result}")
 
     return "\n".join(lines).strip() + "\n"
 
@@ -243,26 +263,12 @@ async def _create_wiki_child_node(
     return node_token, child_doc_url
 
 
-async def _write_markdown_to_doc(
+async def _append_blank_whiteboard(
     *,
     child_doc_url: str,
-    markdown: str,
     identity: str,
 ) -> str:
     with tempfile.TemporaryDirectory(prefix="feishu-mindmap-") as tmp_dir:
-        markdown_file = tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".md",
-            prefix="mindmap-",
-            encoding="utf-8",
-            delete=False,
-            dir=tmp_dir,
-        )
-        markdown_file.write(markdown)
-        markdown_file.flush()
-        markdown_file.close()
-
-        rel_file = "./" + markdown_file.name.split("/")[-1]
         cmd = [
             settings.FEISHU_CLI_BIN,
             "docs",
@@ -272,7 +278,7 @@ async def _write_markdown_to_doc(
             "--mode",
             "append",
             "--markdown",
-            f"@{rel_file}",
+            '<whiteboard type="blank"></whiteboard>',
             "--as",
             identity,
         ]
@@ -304,7 +310,106 @@ async def _write_markdown_to_doc(
     if not payload.get("ok", False):
         err = payload.get("error") or {}
         raise RuntimeError(f"飞书写回失败: {err}")
-    return _extract_doc_url(payload, child_doc_url)
+    board_tokens = (((payload.get("data") or {}) if isinstance(payload, dict) else {}) or {}).get("board_tokens")
+    if not isinstance(board_tokens, list) or not board_tokens:
+        raise RuntimeError("飞书文档追加白板成功但未返回 board token")
+    board_token = str(board_tokens[0] or "").strip()
+    if not board_token:
+        raise RuntimeError("飞书文档追加白板成功但 board token 为空")
+    return board_token
+
+
+async def _write_mermaid_to_whiteboard(
+    *,
+    board_token: str,
+    mermaid: str,
+    identity: str,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="feishu-mindmap-") as tmp_dir:
+        mmd_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".mmd",
+            prefix="mindmap-",
+            encoding="utf-8",
+            delete=False,
+            dir=tmp_dir,
+        )
+        mmd_file.write(mermaid)
+        mmd_file.flush()
+        mmd_file.close()
+
+        convert_cmd = [
+            "npx",
+            "-y",
+            "@larksuite/whiteboard-cli@^0.1.0",
+            "--to",
+            "openapi",
+            "-i",
+            mmd_file.name,
+            "--format",
+            "json",
+        ]
+        logger.info("Whiteboard CLI convert mermaid: {}", " ".join(convert_cmd))
+        convert_proc = await asyncio.create_subprocess_exec(
+            *convert_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=tmp_dir,
+        )
+        try:
+            convert_stdout_bytes, convert_stderr_bytes = await asyncio.wait_for(
+                convert_proc.communicate(),
+                timeout=float(settings.FEISHU_CLI_TIMEOUT_SECONDS),
+            )
+        except asyncio.TimeoutError:
+            convert_proc.kill()
+            raise RuntimeError("Whiteboard CLI 转换 Mermaid 超时")
+
+        convert_stdout = convert_stdout_bytes.decode("utf-8", errors="ignore")
+        convert_stderr = convert_stderr_bytes.decode("utf-8", errors="ignore")
+        if convert_proc.returncode != 0:
+            raise RuntimeError(f"Whiteboard CLI 转换失败: {convert_stderr or convert_stdout}")
+
+        update_cmd = [
+            settings.FEISHU_CLI_BIN,
+            "docs",
+            "+whiteboard-update",
+            "--whiteboard-token",
+            board_token,
+            "--overwrite",
+            "--yes",
+            "--as",
+            identity,
+            "--idempotent-token",
+            f"task-{uuid.uuid4().hex[:24]}",
+        ]
+        if settings.FEISHU_CLI_PROFILE.strip():
+            update_cmd.extend(["--profile", settings.FEISHU_CLI_PROFILE.strip()])
+        logger.info("Feishu CLI whiteboard update: {}", " ".join(update_cmd))
+        update_proc = await asyncio.create_subprocess_exec(
+            *update_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=tmp_dir,
+        )
+        try:
+            update_stdout_bytes, update_stderr_bytes = await asyncio.wait_for(
+                update_proc.communicate(input=convert_stdout_bytes),
+                timeout=float(settings.FEISHU_CLI_TIMEOUT_SECONDS),
+            )
+        except asyncio.TimeoutError:
+            update_proc.kill()
+            raise RuntimeError("飞书白板写入超时")
+
+    update_stdout = update_stdout_bytes.decode("utf-8", errors="ignore")
+    update_stderr = update_stderr_bytes.decode("utf-8", errors="ignore")
+    if update_proc.returncode != 0:
+        raise RuntimeError(f"飞书白板写入失败: {update_stderr or update_stdout}")
+    payload = _parse_cli_json(update_stdout)
+    if not payload.get("ok", False):
+        err = payload.get("error") or {}
+        raise RuntimeError(f"飞书白板写回失败: {err}")
 
 
 async def write_feishu_doc(
@@ -328,35 +433,26 @@ async def write_feishu_doc(
     if doc_type != "wiki" or not token:
         raise RuntimeError("当前仅支持 wiki 需求文档下自动创建测试用例子文档")
 
-    obj_type = str(settings.FEISHU_WIKI_CHILD_OBJ_TYPE or "mindnote").strip().lower()
-    if obj_type not in {"mindnote", "docx"}:
-        obj_type = "mindnote"
+    # Whiteboard update currently requires board token and is best supported via docx container.
+    obj_type = "docx"
+    configured_obj_type = str(settings.FEISHU_WIKI_CHILD_OBJ_TYPE or "").strip().lower()
+    if configured_obj_type and configured_obj_type != "docx":
+        logger.warning("FEISHU_WIKI_CHILD_OBJ_TYPE={} ignored for whiteboard mode, use docx", configured_obj_type)
 
-    markdown = _build_mindmap_markdown(cases, title=title)
     _, child_doc_url = await _create_wiki_child_node(
         parent_token=token,
         title=title,
         identity=identity,
         obj_type=obj_type,
     )
-    try:
-        return await _write_markdown_to_doc(
-            child_doc_url=child_doc_url,
-            markdown=markdown,
-            identity=identity,
-        )
-    except Exception as primary_error:  # noqa: BLE001
-        if obj_type != "mindnote":
-            raise RuntimeError(f"飞书 CLI 写入文档失败: {primary_error}") from primary_error
-        logger.warning("Mindnote write failed, fallback to docx child: {}", primary_error)
-        _, fallback_url = await _create_wiki_child_node(
-            parent_token=token,
-            title=title,
-            identity=identity,
-            obj_type="docx",
-        )
-        return await _write_markdown_to_doc(
-            child_doc_url=fallback_url,
-            markdown=markdown,
-            identity=identity,
-        )
+    board_token = await _append_blank_whiteboard(
+        child_doc_url=child_doc_url,
+        identity=identity,
+    )
+    mermaid = _build_mindmap_mermaid(cases, title=title)
+    await _write_mermaid_to_whiteboard(
+        board_token=board_token,
+        mermaid=mermaid,
+        identity=identity,
+    )
+    return child_doc_url
