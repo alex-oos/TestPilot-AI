@@ -20,6 +20,17 @@ async def init_db() -> None:
         missing_custom_keyword = await conn.run_sync(_table_missing_custom_keyword)
         if missing_custom_keyword:
             await conn.execute(text("ALTER TABLE notification_configs ADD COLUMN custom_keyword VARCHAR DEFAULT ''"))
+
+        def _table_missing_feishu_mindmap_url(sync_conn) -> bool:
+            inspector = inspect(sync_conn)
+            if not inspector.has_table("tasks"):
+                return False
+            columns = {col.get("name") for col in inspector.get_columns("tasks")}
+            return "feishu_mindmap_url" not in columns
+
+        missing_feishu_mindmap_url = await conn.run_sync(_table_missing_feishu_mindmap_url)
+        if missing_feishu_mindmap_url:
+            await conn.execute(text("ALTER TABLE tasks ADD COLUMN feishu_mindmap_url VARCHAR"))
     await user_domain.ensure_user("admin", password="123456")
     # await config_center_domain.seed_default_config_center()
     logger.info("SQLAlchemy initialized")
