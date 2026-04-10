@@ -1,3 +1,4 @@
+import base64
 from loguru import logger
 from typing import List, Dict, Any, Optional
 from app.core.config import settings
@@ -81,6 +82,67 @@ class UniversalLLMClient:
 
         except Exception as e:
             logger.error(f"Error occurred while calling LLM via OpenAI SDK: {e}")
+            return f"Error: {str(e)}"
+
+    async def extract_text_from_image(
+        self,
+        *,
+        image_bytes: bytes,
+        file_name: str,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        model_in_use = model or self.model
+        api_key_in_use = api_key or self.api_key
+        base_url_in_use = (base_url or self.base_url).rstrip("/")
+
+        suffix = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").lower()
+        mime_map = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+            "bmp": "image/bmp",
+            "gif": "image/gif",
+        }
+        mime_type = mime_map.get(suffix, "image/png")
+        data_uri = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+        vision_prompt = (
+            prompt
+            or "请提取图片中的全部可读文本，按原有结构输出。如果包含表格，请按行列清晰输出。"
+        )
+
+        try:
+            if api_key_in_use or base_url_in_use:
+                client = AsyncOpenAI(
+                    api_key=api_key_in_use if api_key_in_use else "not-needed",
+                    base_url=base_url_in_use if base_url_in_use else None,
+                )
+            else:
+                client = self.client
+
+            response = await client.chat.completions.create(
+                model=model_in_use,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": vision_prompt},
+                            {"type": "image_url", "image_url": {"url": data_uri}},
+                        ],
+                    }
+                ],
+                temperature=0,
+                max_tokens=max_tokens or 2000,
+            )
+            if response.choices and response.choices[0].message and response.choices[0].message.content:
+                return response.choices[0].message.content.strip()
+            return "Error: OCR response content is empty."
+        except Exception as e:
+            logger.error(f"Error occurred while calling vision OCR via OpenAI SDK: {e}")
             return f"Error: {str(e)}"
 
 llm_client = UniversalLLMClient()
