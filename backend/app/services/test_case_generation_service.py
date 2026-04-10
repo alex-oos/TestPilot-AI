@@ -1,9 +1,18 @@
 import json
+import asyncio
+import uuid
 from typing import AsyncGenerator, Optional
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
+from loguru import logger
 
 from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.rag.knowledge_base import (
+    build_generation_history_context,
+    find_similar_requirement_history,
+    ingest_adopted_test_cases,
+    ingest_requirement_document,
+)
 from app.services import file_service, task_service
 from app.services.exporter import convert_cases_to_mindmap
 from app.services.ms_sync import sync_cases_to_ms
@@ -250,14 +259,37 @@ async def generate_test_cases_stream(
     context: Optional[str] = None,
     requirements: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
-    merged_input = file_service.build_merged_input_from_file(
+    merged_input = await file_service.build_merged_input_from_file(
         file_path=file_path,
         file_name=file_name,
         context=context,
         requirements=requirements,
     )
+    transient_task_id = f"stream-{uuid.uuid4()}"
+    kb_ingest = await asyncio.to_thread(
+        ingest_requirement_document,
+        task_id=transient_task_id,
+        text=merged_input,
+        source_type="local",
+        file_name=file_name,
+        submitter="stream",
+    )
+    similar_history = await asyncio.to_thread(
+        find_similar_requirement_history,
+        query_text=merged_input,
+        current_task_id=transient_task_id,
+        top_k=5,
+    )
+    history_context = build_generation_history_context(similar_history) if similar_history else ""
 
     yield "# AI 流式生成开始\n\n"
+    yield (
+        "## 0. 知识库检索阶段\n\n"
+        f"- 已入库需求片段数：{kb_ingest.get('chunk_count', 0)}\n"
+        f"- 命中历史相似需求数：{len(similar_history)}\n\n"
+    )
+    if not similar_history:
+        yield "- 检索模式：冷启动（无历史命中，按当前需求独立生成）\n\n"
     yield "## 1. 需求分析阶段\n\n"
 
     analysis = await analyze_requirements(merged_input)
@@ -266,7 +298,7 @@ async def generate_test_cases_stream(
     yield "\n\n## 2. 测试用例生成阶段\n\n"
 
     design = await design_test_strategy(analysis)
-    cases = await generate_test_cases(design)
+    cases = await generate_test_cases(design, history_context)
     cases_markdown = _cases_to_markdown(cases)
     async for chunk in _yield_markdown_text(cases_markdown):
         yield chunk
@@ -347,6 +379,21 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
 
     adopted_cases = [item for item in normalized_cases if item.get("adoption_status") == "accepted"]
     rejected_count = len(normalized_cases) - len(adopted_cases)
+    kb_adopted = {"case_count": 0}
+    if adopted_cases:
+        kb_adopted = await asyncio.to_thread(
+            ingest_adopted_test_cases,
+            task_id=task_id,
+            cases=adopted_cases,
+            source_type=str(task.get("source_type") or "manual_review"),
+            file_name=str(task.get("file_name") or task.get("task_name") or ""),
+            submitter="manual_review",
+        )
+        logger.info(
+            "Task {} reviewed cases ingested into KB: {}",
+            task_id,
+            kb_adopted.get("case_count", 0),
+        )
 
     await task_service.update_phase(task_id, "generation", "completed", {"cases": adopted_cases})
     await task_service.set_task_mindmap(task_id, convert_cases_to_mindmap(adopted_cases))
@@ -376,6 +423,9 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
             "reviewed_total": len(normalized_cases),
             "adopted_count": len(adopted_cases),
             "rejected_count": rejected_count,
+            "knowledge_base": {
+                "adopted_cases_ingested": kb_adopted.get("case_count", 0),
+            },
             "status": "人工审核完成",
         },
     )
