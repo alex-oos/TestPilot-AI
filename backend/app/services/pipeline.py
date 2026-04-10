@@ -9,11 +9,68 @@ from pathlib import Path
 from typing import Optional
 from loguru import logger
 from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.core.config import settings
 from app.modules.persistence import config_center_store
+from app.modules.dingtalk import read_dingtalk_doc
+from app.modules.feishu import read_feishu_doc, write_feishu_doc
+from app.rag.knowledge_base import (
+    build_generation_history_context,
+    find_similar_requirement_history,
+    ingest_requirement_document,
+)
 from app.services.notification import notify_task_event
 from app.services.exporter import convert_cases_to_mindmap
 from app.services import task_manager
+from app.services import file_service
 from app.services.file_storage import read_uploaded_bytes
+
+ANALYSIS_SUB_STEP_META = [
+    ("parse_clean", "解析与清洗"),
+    ("chunking", "需求拆分 Chunking"),
+    ("metadata_build", "元数据构建"),
+    ("embedding_store", "Embedding 向量化入库"),
+    ("vector_retrieval", "向量检索 TopK"),
+    ("rerank_filter", "重排与过滤"),
+    ("prompt_assembly", "组装分析上下文"),
+    ("llm_analysis", "LLM 需求分析"),
+    ("strategy_design", "测试策略生成"),
+]
+QUALITY_BLOCKED_STATUS = "quality_blocked"
+
+
+def _evaluate_expected_result_quality(cases: list[dict], threshold: float) -> dict:
+    total = len(cases or [])
+    if total <= 0:
+        return {
+            "total_cases": 0,
+            "blank_expected_count": 0,
+            "blank_ratio": 0.0,
+            "threshold": threshold,
+            "passed": False,
+        }
+    blank_count = sum(1 for item in cases if not str((item or {}).get("expected_result") or "").strip())
+    blank_ratio = blank_count / total
+    return {
+        "total_cases": total,
+        "blank_expected_count": blank_count,
+        "blank_ratio": blank_ratio,
+        "threshold": threshold,
+        "passed": blank_ratio <= threshold,
+    }
+
+
+def _truncate_for_llm(text: str, max_chars: int) -> tuple[str, bool]:
+    value = str(text or "")
+    if max_chars <= 0 or len(value) <= max_chars:
+        return value, False
+    head = int(max_chars * 0.8)
+    tail = max_chars - head
+    truncated = (
+        value[:head]
+        + "\n\n[内容过长，已截断中间段以提升生成速度]\n\n"
+        + value[-tail:]
+    )
+    return truncated, True
 
 
 def _is_llm_error(text: str) -> bool:
@@ -49,6 +106,20 @@ def _role_display_name(role: str) -> str:
         "review": "用例评审",
     }
     return mapping.get(role, role)
+
+
+def _derive_requirement_name(text_content: str, fallback: str) -> str:
+    for raw in (text_content or "").splitlines():
+        line = (raw or "").strip()
+        if not line:
+            continue
+        line = line.lstrip("#").strip()
+        if line:
+            return line[:40]
+    value = (fallback or "").strip()
+    if value:
+        return value[:40]
+    return "需求"
 
 
 async def _validate_local_runtime_config(required_roles: Optional[list[str]] = None) -> dict:
@@ -131,57 +202,64 @@ async def run_generation_pipeline(
     try:
         behavior_cfg = await _validate_local_runtime_config(["analysis", "generation", "review"])
         ai_timeout_seconds = int(behavior_cfg.get("review_timeout_seconds") or 1500)
+        analysis_sub_steps_state = {key: "pending" for key, _ in ANALYSIS_SUB_STEP_META}
+        analysis_phase_data: dict = {}
 
-        async def run_ai_step(coro_factory, step_name: str, retries: int = 1):
+        async def run_ai_step(coro_factory, step_name: str, retries: int | None = None):
             last_exc: Exception | None = None
-            for attempt in range(retries + 1):
+            attempts = retries if isinstance(retries, int) and retries >= 0 else int(settings.LLM_STEP_RETRIES or 0)
+            timeout_seconds = min(int(ai_timeout_seconds or 1500), int(settings.LLM_STEP_TIMEOUT_SECONDS or 240))
+            for attempt in range(attempts + 1):
                 try:
-                    return await asyncio.wait_for(coro_factory(), timeout=ai_timeout_seconds)
+                    return await asyncio.wait_for(coro_factory(), timeout=timeout_seconds)
                 except asyncio.TimeoutError as exc:
                     last_exc = RuntimeError(
-                        f"{step_name}超时（>{ai_timeout_seconds}秒），请在生成行为配置中调整超时设置"
+                        f"{step_name}超时（>{timeout_seconds}秒），请简化输入或检查模型服务状态"
                     )
-                    logger.warning(f"Task {task_id} | {step_name} timeout, attempt={attempt + 1}/{retries + 1}")
+                    logger.warning(f"Task {task_id} | {step_name} timeout, attempt={attempt + 1}/{attempts + 1}")
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
-                    logger.warning(f"Task {task_id} | {step_name} failed, attempt={attempt + 1}/{retries + 1}: {exc}")
-                if attempt < retries:
+                    logger.warning(f"Task {task_id} | {step_name} failed, attempt={attempt + 1}/{attempts + 1}: {exc}")
+                if attempt < attempts:
                     await asyncio.sleep(0.6)
             raise last_exc or RuntimeError(f"{step_name}执行失败")
+
+        def _build_analysis_sub_steps():
+            return [
+                {"key": key, "label": label, "status": analysis_sub_steps_state.get(key, "pending")}
+                for key, label in ANALYSIS_SUB_STEP_META
+            ]
+
+        async def _push_analysis_phase(status: str = "running", patch: Optional[dict] = None):
+            if patch:
+                analysis_phase_data.update(patch)
+            analysis_phase_data["sub_steps"] = _build_analysis_sub_steps()
+            await task_manager.update_phase(task_id, "analysis", status, dict(analysis_phase_data))
+
+        async def _set_analysis_sub_step(step_key: str, status: str):
+            if step_key in analysis_sub_steps_state:
+                analysis_sub_steps_state[step_key] = status
+            await _push_analysis_phase("running")
 
         # ── Step 0: Parse document ──────────────────────────────────────────
         parse_status_text = "需求描述分析中" if source_type == "manual" else "本地文件分析中"
         await task_manager.set_task_status(task_id, "running", status_text=parse_status_text)
         text_content = ""
+        await _set_analysis_sub_step("parse_clean", "running")
 
         if source_type in ("local", "manual") and file_content is None and file_path:
             file_content = read_uploaded_bytes(file_path)
         
         if source_type in ["feishu", "dingtalk"]:
-            text_content = (
-                f"[在线文档] 来源: {doc_url}\n"
-                "飞书/钉钉文档需配置相应Token才能真实获取。此为演示内容，请改用本地上传体验完整流程。"
-            )
-        elif source_type == "local" and file_content:
-            import io
-            import os
-            import docx
-            from pypdf import PdfReader
-            
-            ext = os.path.splitext(file_name or "")[1].lower()
-            if ext in (".md", ".txt"):
-                text_content = file_content.decode("utf-8", errors="ignore")
-            elif ext == ".docx":
-                doc = docx.Document(io.BytesIO(file_content))
-                text_content = "\n".join([p.text for p in doc.paragraphs])
-            elif ext == ".pdf":
-                pdf = PdfReader(io.BytesIO(file_content))
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        text_content += t + "\n"
+            if source_type == "feishu":
+                text_content = await run_ai_step(lambda: read_feishu_doc(doc_url or ""), "飞书文档解析")
             else:
-                text_content = file_content.decode("utf-8", errors="ignore")
+                text_content = await run_ai_step(lambda: read_dingtalk_doc(doc_url or ""), "钉钉文档解析")
+        elif source_type == "local" and file_content:
+            text_content = await file_service.parse_text_from_uploaded_file(
+                file_name=file_name or "upload.bin",
+                file_content=file_content,
+            )
         elif source_type == "manual" and file_content:
             text_content = file_content.decode("utf-8", errors="ignore")
 
@@ -199,27 +277,87 @@ async def run_generation_pipeline(
         
         if not text_content.strip():
             raise ValueError("无法从文档中提取到文本内容")
+        await _set_analysis_sub_step("parse_clean", "completed")
+        llm_source_text, source_truncated = _truncate_for_llm(
+            text_content,
+            int(settings.LLM_MAX_SOURCE_CHARS or 32000),
+        )
+        if source_type in {"feishu", "dingtalk"}:
+            current_task_name = str((task_snapshot or {}).get("task_name") or "").strip()
+            if current_task_name in {"", file_service.ONLINE_TASK_NAME_PLACEHOLDER}:
+                derived_task_name = _derive_requirement_name(text_content, fallback="在线文档需求")
+                if derived_task_name:
+                    await task_manager.set_task_name(task_id, derived_task_name)
+                    task_snapshot = await task_manager.get_task(task_id)
+
+        # ── Step 0.5: Requirement KB ingest + retrieval ───────────────────
+        await _set_analysis_sub_step("chunking", "running")
+        kb_ingest = await asyncio.to_thread(
+            ingest_requirement_document,
+            task_id=task_id,
+            text=text_content,
+            source_type=source_type,
+            file_name=file_name,
+            submitter=submitter,
+        )
+        await _set_analysis_sub_step("chunking", "completed")
+        await _set_analysis_sub_step("metadata_build", "completed")
+        await _set_analysis_sub_step("embedding_store", "completed")
+
+        await _set_analysis_sub_step("vector_retrieval", "running")
+        similar_history = await asyncio.to_thread(
+            find_similar_requirement_history,
+            query_text=text_content,
+            current_task_id=task_id,
+            top_k=5,
+        )
+        await _set_analysis_sub_step("vector_retrieval", "completed")
+        await _set_analysis_sub_step("rerank_filter", "completed")
+
+        await _set_analysis_sub_step("prompt_assembly", "running")
+        history_context = build_generation_history_context(similar_history) if similar_history else ""
+        await _set_analysis_sub_step("prompt_assembly", "completed")
         
         # ── Phase 1: 需求分析 ─────────────────────────────────────────────
         await task_manager.set_task_status(task_id, "running", status_text="需求分析中")
-        await task_manager.update_phase(task_id, "analysis", "running", {
+        await _push_analysis_phase("running", {
             "source_text": text_content,
+            "knowledge_base": {
+                "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                "similar_history_count": len(similar_history),
+                "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+            },
         })
         logger.info(f"Task {task_id} | Phase 1: Requirement Analysis")
         analysis_output_mode = await _read_output_mode()
         
-        analysis = await run_ai_step(lambda: analyze_requirements(text_content), "需求分析")
+        await _set_analysis_sub_step("llm_analysis", "running")
+        analysis = await run_ai_step(lambda: analyze_requirements(llm_source_text), "需求分析")
+        await _set_analysis_sub_step("llm_analysis", "completed")
         if _is_llm_error(analysis):
             raise RuntimeError(f"需求分析失败: {analysis}")
         # 实时模式下，需求分析结果先落库，保证页面可立即展示
         if analysis_output_mode == "stream":
-            await task_manager.update_phase(task_id, "analysis", "running", {
+            await _push_analysis_phase("running", {
                 "source_text": text_content,
                 "analysis": analysis,
                 "output_mode": analysis_output_mode,
+                "knowledge_base": {
+                    "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                    "similar_history_count": len(similar_history),
+                    "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+                    "history_preview": similar_history[:3],
+                },
             })
 
-        design = await run_ai_step(lambda: design_test_strategy(analysis), "测试策略生成")
+        await task_manager.set_task_status(task_id, "running", status_text="测试策略生成中")
+        await _set_analysis_sub_step("strategy_design", "running")
+        strategy_input, strategy_truncated = _truncate_for_llm(
+            analysis,
+            int(settings.LLM_MAX_ANALYSIS_CHARS_FOR_STRATEGY or 12000),
+        )
+        design = await run_ai_step(lambda: design_test_strategy(strategy_input), "测试策略生成")
+        await _set_analysis_sub_step("strategy_design", "completed")
         if _is_llm_error(design):
             raise RuntimeError(f"测试策略生成失败: {design}")
         
@@ -228,10 +366,26 @@ async def run_generation_pipeline(
             "analysis": analysis,
             "design": design,
             "output_mode": analysis_output_mode,
-        }
+                "knowledge_base": {
+                    "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                    "similar_history_count": len(similar_history),
+                    "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+                    "history_preview": similar_history,
+                },
+                "llm_guardrails": {
+                    "source_truncated": source_truncated,
+                    "strategy_input_truncated": strategy_truncated,
+                    "step_timeout_seconds": min(
+                        int(ai_timeout_seconds or 1500),
+                        int(settings.LLM_STEP_TIMEOUT_SECONDS or 240),
+                    ),
+                    "step_retries": int(settings.LLM_STEP_RETRIES or 0),
+                },
+            }
         analysis_json_file = _save_phase_json(task_id, "analysis", analysis_payload)
         analysis_payload["analysis_json_file"] = analysis_json_file
-        await task_manager.update_phase(task_id, "analysis", "completed", analysis_payload)
+        analysis_phase_data.update(analysis_payload)
+        await _push_analysis_phase("completed")
         
         # ── Phase 2: 用例编写 ─────────────────────────────────────────────
         await task_manager.set_task_status(task_id, "running", status_text="用例编写中")
@@ -240,7 +394,7 @@ async def run_generation_pipeline(
             "output_mode": generation_output_mode,
         })
         logger.info(f"Task {task_id} | Phase 2: Test Case Generation")
-        cases = await run_ai_step(lambda: generate_test_cases(design), "测试用例生成")
+        cases = await run_ai_step(lambda: generate_test_cases(design, history_context), "测试用例生成")
         # 实时模式下，用例生成结果先落库，保证页面可立即展示
         if generation_output_mode == "stream":
             await task_manager.update_phase(task_id, "generation", "running", {
@@ -304,6 +458,81 @@ async def run_generation_pipeline(
                 "review": review,
                 "output_mode": review_output_mode,
             })
+
+        quality_gate = _evaluate_expected_result_quality(
+            cases=cases,
+            threshold=float(settings.EXPECTED_RESULT_EMPTY_RATIO_THRESHOLD or 0.35),
+        )
+        if settings.QUALITY_GATE_ENABLE and not quality_gate["passed"]:
+            fail_msg = (
+                "模型输出质量不足：expected_result 为空比例超阈值，已终止任务。"
+                f" 空白占比={quality_gate['blank_ratio']:.2%}，阈值={quality_gate['threshold']:.2%}"
+            )
+            await task_manager.update_phase(
+                task_id,
+                "generation",
+                "failed",
+                {
+                    "cases": cases,
+                    "output_mode": generation_output_mode,
+                    "cases_json_file": generation_payload.get("cases_json_file"),
+                    "quality_gate": quality_gate,
+                },
+                error=fail_msg,
+            )
+            await task_manager.set_task_status(
+                task_id,
+                QUALITY_BLOCKED_STATUS,
+                error=fail_msg,
+                status_text="模型输出质量不足",
+            )
+            await notify_task_event(
+                task_id=task_id,
+                task_status="模型输出质量不足",
+                status_text="模型输出质量不足：expected_result 缺失过多，任务已终止",
+                error=fail_msg,
+            )
+            return
+
+        # 飞书源任务：在需求文档下创建“需求名+测试用例”子文档并写入思维导图内容
+        try:
+            feishu_mindmap_url = ""
+            if source_type == "feishu" and str(doc_url or "").strip():
+                requirement_name = _derive_requirement_name(
+                    text_content=text_content,
+                    fallback=(task_snapshot or {}).get("task_name") or "",
+                )
+                feishu_mindmap_url = await write_feishu_doc(
+                    doc_url=doc_url or "",
+                    cases=cases,
+                    title=f"{requirement_name}测试用例",
+                )
+            if feishu_mindmap_url:
+                await task_manager.set_task_feishu_mindmap_url(task_id, feishu_mindmap_url)
+                await task_manager.update_phase(
+                    task_id,
+                    "generation",
+                    "completed",
+                    {
+                        "cases": cases,
+                        "output_mode": generation_output_mode,
+                        "cases_json_file": generation_payload.get("cases_json_file"),
+                        "feishu_mindmap_url": feishu_mindmap_url,
+                    },
+                )
+        except Exception as write_error:  # noqa: BLE001
+            logger.warning("Task {} write cases back to Feishu doc skipped: {}", task_id, write_error)
+            await task_manager.update_phase(
+                task_id,
+                "generation",
+                "completed",
+                {
+                    "cases": cases,
+                    "output_mode": generation_output_mode,
+                    "cases_json_file": generation_payload.get("cases_json_file"),
+                    "feishu_mindmap_error": str(write_error),
+                },
+            )
         
         # ── Phase 4: 人工审核 ────────────────────────────────────────────
         await task_manager.update_phase(

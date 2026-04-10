@@ -1,8 +1,17 @@
+import time
+import asyncio
 from typing import Optional, Dict, Any
 from fastapi import UploadFile, HTTPException
 from loguru import logger
 from app.services.parser import parse_uploaded_file
 from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.modules.dingtalk import read_dingtalk_doc
+from app.modules.feishu import read_feishu_doc
+from app.rag.knowledge_base import (
+    build_generation_history_context,
+    find_similar_requirement_history,
+    ingest_requirement_document,
+)
 from app.services.exporter import convert_cases_to_mindmap, export_cases_to_excel
 
 
@@ -21,7 +30,10 @@ async def process_generation_request(source_type: str, doc_url: Optional[str], f
             logger.error("Doc URL is missing for remote source type.")
             raise HTTPException(status_code=400, detail="此来源类型必须填写文档链接")
         logger.debug(f"Parsing document from URL: {doc_url}")
-        text_content = f"[在线文档内容] 来源: {doc_url}\n注意：飞书/钉钉文档需要配置相应Token才能真实获取内容。当前为演示模式，请使用本地上传功能体验完整AI生成流程。"
+        if source_type == "feishu":
+            text_content = await read_feishu_doc(doc_url)
+        else:
+            text_content = await read_dingtalk_doc(doc_url)
         
     if source_type == "local":
         if not file:
@@ -36,6 +48,23 @@ async def process_generation_request(source_type: str, doc_url: Optional[str], f
         
     if not text_content:
         raise HTTPException(status_code=400, detail="无法从文档中提取到文本内容")
+
+    transient_task_id = f"legacy-{source_type}-{int(time.time() * 1000)}"
+    await asyncio.to_thread(
+        ingest_requirement_document,
+        task_id=transient_task_id,
+        text=text_content,
+        source_type=source_type,
+        file_name=file.filename if file else "manual_input.txt",
+        submitter="legacy",
+    )
+    similar_history = await asyncio.to_thread(
+        find_similar_requirement_history,
+        query_text=text_content,
+        current_task_id=transient_task_id,
+        top_k=5,
+    )
+    history_context = build_generation_history_context(similar_history) if similar_history else ""
     
     logger.info("Pipeline Phase 1: AI requirement analysis...")
     # Phase 1: 需求分析
@@ -47,7 +76,7 @@ async def process_generation_request(source_type: str, doc_url: Optional[str], f
     
     logger.info("Pipeline Phase 3: AI test case generation...")
     # Phase 3: 生成测试用例
-    cases = await generate_test_cases(design)
+    cases = await generate_test_cases(design, history_context)
     
     logger.info("Pipeline Phase 4: AI test case review...")
     # Phase 4: AI评审优化（新增）
