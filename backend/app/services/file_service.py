@@ -1,5 +1,5 @@
 import io
-from datetime import datetime
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -7,28 +7,38 @@ import docx
 from fastapi import HTTPException, UploadFile
 from pypdf import PdfReader
 
+from app.rag.knowledge_base import ingest_requirement_document
+from app.services.image_ocr import extract_text_from_image_bytes
 from app.services import task_manager
 from app.services.file_storage import read_uploaded_bytes, save_uploaded_bytes
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-ALLOWED_UPLOAD_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf", ".docx", ".json", ".yaml", ".yml"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+ALLOWED_UPLOAD_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf", ".docx", ".json", ".yaml", ".yml", *IMAGE_EXTENSIONS}
 FILE_SIGNATURES = {
     b"%PDF": ".pdf",
     b"PK\x03\x04": ".docx",
+    b"\x89PNG\r\n\x1a\n": ".png",
+    b"\xff\xd8\xff": ".jpg",
+    b"GIF87a": ".gif",
+    b"GIF89a": ".gif",
+    b"BM": ".bmp",
 }
 
 
+ONLINE_TASK_NAME_PLACEHOLDER = "文档解析中"
+
+
 def default_task_name(source_type: str, file_name: Optional[str], doc_url: Optional[str]) -> str:
-    submit_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if source_type == "local" and file_name:
-        base_name = Path(file_name).stem
-    elif source_type == "manual":
-        base_name = "手动输入"
-    elif doc_url:
-        base_name = doc_url.rstrip("/").split("/")[-1] or "在线文档"
-    else:
-        base_name = "任务"
-    return f"{base_name}_{submit_time}"
+        return file_name
+    if source_type == "manual":
+        return "手动需求"
+    if source_type in {"feishu", "dingtalk"}:
+        return ONLINE_TASK_NAME_PLACEHOLDER
+    if doc_url:
+        return doc_url.rstrip("/").split("/")[-1] or "任务"
+    return "任务"
 
 
 def build_manual_text(
@@ -56,13 +66,18 @@ def validate_file_type(file_content: bytes, file_name: str) -> str:
     if ext not in ALLOWED_UPLOAD_EXTENSIONS:
         raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
 
-    if ext in {".pdf", ".docx"}:
+    if ext in {".pdf", ".docx"} | IMAGE_EXTENSIONS:
         header = file_content[:8]
         expected = None
+        if ext == ".webp":
+            if len(file_content) >= 12 and file_content[:4] == b"RIFF" and file_content[8:12] == b"WEBP":
+                expected = ".webp"
         for signature, detected_ext in FILE_SIGNATURES.items():
             if header.startswith(signature):
                 expected = detected_ext
                 break
+        if ext == ".jpeg" and expected == ".jpg":
+            expected = ".jpeg"
         if expected != ext:
             raise HTTPException(status_code=400, detail="文件类型不匹配或不支持")
     return ext
@@ -74,7 +89,7 @@ def validate_upload(file_name: str, file_size: int, file_content: bytes) -> str:
     return validate_file_type(file_content, file_name)
 
 
-def parse_text_from_uploaded_file(file_name: str, file_content: bytes) -> str:
+async def parse_text_from_uploaded_file(file_name: str, file_content: bytes) -> str:
     ext = Path(file_name or "").suffix.lower()
     if ext in {".md", ".markdown", ".txt", ".json", ".yaml", ".yml"}:
         return file_content.decode("utf-8", errors="ignore").strip()
@@ -89,10 +104,15 @@ def parse_text_from_uploaded_file(file_name: str, file_content: bytes) -> str:
             if parsed:
                 text += parsed + "\n"
         return text.strip()
+    if ext in IMAGE_EXTENSIONS:
+        ocr_text = await extract_text_from_image_bytes(image_bytes=file_content, file_name=file_name)
+        if ocr_text.lower().startswith("error:"):
+            raise HTTPException(status_code=400, detail=f"图片识别失败：{ocr_text}")
+        return ocr_text.strip()
     return file_content.decode("utf-8", errors="ignore").strip()
 
 
-def build_merged_input_from_file(
+async def build_merged_input_from_file(
     *,
     file_path: str,
     file_name: str,
@@ -100,7 +120,7 @@ def build_merged_input_from_file(
     requirements: Optional[str] = None,
 ) -> str:
     file_content = read_uploaded_bytes(file_path)
-    parsed_text = parse_text_from_uploaded_file(file_name=file_name, file_content=file_content)
+    parsed_text = await parse_text_from_uploaded_file(file_name=file_name, file_content=file_content)
     if not parsed_text:
         raise HTTPException(status_code=400, detail="无法从文件中提取有效文本")
 
@@ -125,6 +145,9 @@ async def create_uploaded_task(
         validate_upload(file_name=file_name, file_size=len(file_content), file_content=file_content)
     file_id, file_path = save_uploaded_bytes(file_name, file_content)
     final_task_name = (task_name or "").strip() or default_task_name(source_type, file_name, doc_url)
+    parsed_text = await parse_text_from_uploaded_file(file_name=file_name, file_content=file_content)
+    if not parsed_text.strip():
+        raise HTTPException(status_code=400, detail="无法从文件中提取有效文本，无法写入需求知识库")
 
     task_id = await task_manager.create_task(
         task_name=final_task_name,
@@ -136,6 +159,14 @@ async def create_uploaded_task(
         status_text="文件已上传，待分析",
         submitter=submitter,
     )
+    kb_ingest = await asyncio.to_thread(
+        ingest_requirement_document,
+        task_id=task_id,
+        text=parsed_text,
+        source_type=source_type,
+        file_name=file_name,
+        submitter=submitter,
+    )
     await task_manager.update_phase(
         task_id,
         "upload",
@@ -145,6 +176,9 @@ async def create_uploaded_task(
             "file_name": file_name,
             "file_path": file_path,
             "file_size": len(file_content),
+            "knowledge_base": {
+                "ingested_chunks": kb_ingest.get("chunk_count", 0),
+            },
         },
     )
     return {"task_id": task_id, "file_id": file_id, "file_name": file_name, "file_path": file_path}
