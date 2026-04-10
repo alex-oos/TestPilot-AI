@@ -23,8 +23,16 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
     await task_domain.update_task_status(task_id, status, error=error, status_text=status_text)
 
 
+async def update_task_name(task_id: str, task_name: str) -> None:
+    await task_domain.update_task_name(task_id, task_name=task_name)
+
+
 async def update_task_mindmap(task_id: str, mindmap: str) -> None:
     await task_domain.update_task_mindmap(task_id, mindmap)
+
+
+async def update_task_feishu_mindmap_url(task_id: str, feishu_mindmap_url: Optional[str]) -> None:
+    await task_domain.update_task_feishu_mindmap_url(task_id, feishu_mindmap_url)
 
 
 async def update_task_decision(
