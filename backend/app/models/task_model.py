@@ -22,6 +22,7 @@ class Task(Base):
     decision_at: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     mindmap: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    feishu_mindmap_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     user: Mapped[Optional["User"]] = relationship(back_populates="tasks")
     details: Mapped[List["TaskDetail"]] = relationship(back_populates="task")
