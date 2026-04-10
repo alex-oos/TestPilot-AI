@@ -78,8 +78,22 @@ async def set_task_status(task_id: str, status: str, error: str = None, status_t
         _tasks[task_id] = task
 
 
+async def set_task_name(task_id: str, task_name: str):
+    await task_store.update_task_name(task_id, task_name=task_name)
+    task = await task_store.get_task_record(task_id)
+    if task:
+        _tasks[task_id] = task
+
+
 async def set_task_mindmap(task_id: str, mindmap: str):
     await task_store.update_task_mindmap(task_id, mindmap)
+    task = await task_store.get_task_record(task_id)
+    if task:
+        _tasks[task_id] = task
+
+
+async def set_task_feishu_mindmap_url(task_id: str, feishu_mindmap_url: Optional[str]):
+    await task_store.update_task_feishu_mindmap_url(task_id, feishu_mindmap_url)
     task = await task_store.get_task_record(task_id)
     if task:
         _tasks[task_id] = task

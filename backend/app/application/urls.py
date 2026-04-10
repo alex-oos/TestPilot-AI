@@ -3,7 +3,7 @@ from app.api.endpoints import config_center, dashboard, task, login
 
 urlpatterns = [
     {"ApiRouter": login.router, "prefix": "", "tags": ["Authentication"]},
-    {"ApiRouter": test_case_generate.router, "prefix": "", "tags": ["Use Cases Generation"]},
+    {"ApiRouter": task.router, "prefix": "", "tags": ["Use Cases Generation"]},
     {"ApiRouter": config_center.router, "prefix": "", "tags": ["Config Center"]},
     {"ApiRouter": dashboard.router, "prefix": "", "tags": ["Dashboard"]},
 ]
