@@ -138,7 +138,7 @@ def test_parse_feishu_doc_url_supports_underscore_token():
 
 
 @pytest.mark.asyncio
-async def test_write_feishu_doc_creates_mindnote_child_node(monkeypatch):
+async def test_write_feishu_doc_creates_docx_and_updates_whiteboard(monkeypatch):
     calls = []
 
     class _FakeProc:
@@ -147,7 +147,7 @@ async def test_write_feishu_doc_creates_mindnote_child_node(monkeypatch):
             self._stderr = ""
             self.returncode = returncode
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             return self._stdout.encode("utf-8"), self._stderr.encode("utf-8")
 
         def kill(self):
@@ -157,11 +157,17 @@ async def test_write_feishu_doc_creates_mindnote_child_node(monkeypatch):
         calls.append(list(cmd))
         if "wiki" in cmd and "+node-create" in cmd:
             return _FakeProc(
-                '{"ok":true,"data":{"node_token":"node_token_123","obj_type":"mindnote"}}'
+                '{"ok":true,"data":{"node_token":"node_token_123","obj_type":"docx"}}'
             )
-        return _FakeProc(
-            '{"ok":true,"data":{"url":"https://my.feishu.cn/wiki/node_token_123"}}'
-        )
+        if "docs" in cmd and "+update" in cmd:
+            return _FakeProc(
+                '{"ok":true,"data":{"board_tokens":["board_token_123"]}}'
+            )
+        if "docs" in cmd and "+whiteboard-update" in cmd:
+            return _FakeProc('{"ok":true,"data":{"deleted_nodes_num":"0"}}')
+        if cmd and cmd[0] == "npx":
+            return _FakeProc('{"code":0,"data":{"to":"openapi","result":{"nodes":[]}}}')
+        raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(feishu.settings, "FEISHU_AUTO_WRITE_MINDMAP", True)
     monkeypatch.setattr(feishu.settings, "FEISHU_USE_CLI", True)
@@ -180,14 +186,17 @@ async def test_write_feishu_doc_creates_mindnote_child_node(monkeypatch):
     )
 
     assert output_url == "https://my.feishu.cn/wiki/node_token_123"
-    assert len(calls) == 2
+    assert len(calls) == 4
     create_cmd = calls[0]
     assert "--obj-type" in create_cmd
-    assert create_cmd[create_cmd.index("--obj-type") + 1] == "mindnote"
+    assert create_cmd[create_cmd.index("--obj-type") + 1] == "docx"
+    update_cmd = next(cmd for cmd in calls if "docs" in cmd and "+whiteboard-update" in cmd)
+    assert "--whiteboard-token" in update_cmd
+    assert update_cmd[update_cmd.index("--whiteboard-token") + 1] == "board_token_123"
 
 
 @pytest.mark.asyncio
-async def test_write_feishu_doc_fallback_to_docx_when_mindnote_write_fails(monkeypatch):
+async def test_write_feishu_doc_raise_when_whiteboard_update_fails(monkeypatch):
     calls = []
 
     class _FakeProc:
@@ -196,7 +205,7 @@ async def test_write_feishu_doc_fallback_to_docx_when_mindnote_write_fails(monke
             self._stderr = stderr_text
             self.returncode = returncode
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             return self._stdout.encode("utf-8"), self._stderr.encode("utf-8")
 
         def kill(self):
@@ -205,12 +214,14 @@ async def test_write_feishu_doc_fallback_to_docx_when_mindnote_write_fails(monke
     async def fake_create_subprocess_exec(*cmd, **kwargs):
         calls.append(list(cmd))
         if "wiki" in cmd and "+node-create" in cmd:
-            if "--obj-type" in cmd and cmd[cmd.index("--obj-type") + 1] == "mindnote":
-                return _FakeProc('{"ok":true,"data":{"node_token":"mindnote_node"}}')
             return _FakeProc('{"ok":true,"data":{"node_token":"docx_node"}}')
-        if "docs" in cmd and "+update" in cmd and any("mindnote_node" in str(part) for part in cmd):
-            return _FakeProc('{"ok":false}', stderr_text="Unsupported document type", returncode=1)
-        return _FakeProc('{"ok":true,"data":{"url":"https://my.feishu.cn/wiki/docx_node"}}')
+        if "docs" in cmd and "+update" in cmd:
+            return _FakeProc('{"ok":true,"data":{"board_tokens":["board_token_002"]}}')
+        if cmd and cmd[0] == "npx":
+            return _FakeProc('{"code":0,"data":{"to":"openapi","result":{"nodes":[]}}}')
+        if "docs" in cmd and "+whiteboard-update" in cmd:
+            return _FakeProc('{"ok":false}', stderr_text="record missing", returncode=1)
+        raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(feishu.settings, "FEISHU_AUTO_WRITE_MINDMAP", True)
     monkeypatch.setattr(feishu.settings, "FEISHU_USE_CLI", True)
@@ -222,16 +233,12 @@ async def test_write_feishu_doc_fallback_to_docx_when_mindnote_write_fails(monke
     monkeypatch.setattr(feishu.settings, "FEISHU_WIKI_CHILD_OBJ_TYPE", "mindnote")
     monkeypatch.setattr(feishu.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
-    output_url = await feishu.write_feishu_doc(
-        doc_url="https://my.feishu.cn/wiki/PARENT_NODE_002",
-        cases=[{"id": 1, "module": "灰度控制", "title": "验证灰度开关", "steps": "开启总开关", "expected_result": "成功"}],
-        title="灰度需求测试用例",
-    )
+    with pytest.raises(RuntimeError):
+        await feishu.write_feishu_doc(
+            doc_url="https://my.feishu.cn/wiki/PARENT_NODE_002",
+            cases=[{"id": 1, "module": "灰度控制", "title": "验证灰度开关", "steps": "开启总开关", "expected_result": "成功"}],
+            title="灰度需求测试用例",
+        )
 
-    assert output_url == "https://my.feishu.cn/wiki/docx_node"
-    create_obj_types = [
-        cmd[cmd.index("--obj-type") + 1]
-        for cmd in calls
-        if "wiki" in cmd and "+node-create" in cmd and "--obj-type" in cmd
-    ]
-    assert create_obj_types == ["mindnote", "docx"]
+    create_obj_types = [cmd[cmd.index("--obj-type") + 1] for cmd in calls if "wiki" in cmd and "+node-create" in cmd]
+    assert create_obj_types == ["docx"]
