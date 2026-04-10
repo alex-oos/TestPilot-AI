@@ -62,6 +62,7 @@ async def reset_task_for_retry(task_id: str, status_text: Optional[str] = None) 
         task.status_text = status_text
         task.error = None
         task.mindmap = None
+        task.feishu_mindmap_url = None
         task.decision_status = None
         task.decision_by = None
         task.decision_note = None
@@ -94,6 +95,16 @@ async def update_task_status(
         task.updated_at = now
 
 
+async def update_task_name(task_id: str, task_name: str) -> None:
+    now = utc_now_text()
+    async with transactional_session() as db:
+        task = await TaskTableRepository.get_by_id(db, task_id)
+        if not task:
+            return
+        task.task_name = str(task_name or "").strip()
+        task.updated_at = now
+
+
 async def update_task_mindmap(task_id: str, mindmap: str) -> None:
     now = utc_now_text()
     async with transactional_session() as db:
@@ -101,6 +112,16 @@ async def update_task_mindmap(task_id: str, mindmap: str) -> None:
         if not task:
             return
         task.mindmap = mindmap
+        task.updated_at = now
+
+
+async def update_task_feishu_mindmap_url(task_id: str, feishu_mindmap_url: Optional[str]) -> None:
+    now = utc_now_text()
+    async with transactional_session() as db:
+        task = await TaskTableRepository.get_by_id(db, task_id)
+        if not task:
+            return
+        task.feishu_mindmap_url = feishu_mindmap_url
         task.updated_at = now
 
 
@@ -160,6 +181,7 @@ async def get_task_record(task_id: str) -> Optional[Dict[str, Any]]:
         "decision_at": to_beijing_time_text(task.decision_at),
         "phases": phases,
         "mindmap": task.mindmap,
+        "feishu_mindmap_url": task.feishu_mindmap_url,
         "error": task.error,
     }
 
@@ -198,6 +220,7 @@ async def list_tasks(
                 "status": task.status,
                 "status_text": task.status_text,
                 "decision_status": task.decision_status,
+                "feishu_mindmap_url": task.feishu_mindmap_url,
                 "error": task.error,
                 "created_at": to_beijing_time_text(task.created_at),
                 "updated_at": to_beijing_time_text(task.updated_at),
