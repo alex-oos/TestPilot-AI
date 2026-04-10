@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     FEISHU_CLI_TIMEOUT_SECONDS: int = 20
     FEISHU_AUTO_UPLOAD_XMIND: bool = True
     FEISHU_AUTO_WRITE_MINDMAP: bool = True
-    FEISHU_WIKI_CHILD_OBJ_TYPE: str = "mindnote"
+    FEISHU_WIKI_CHILD_OBJ_TYPE: str = "docx"
     FEISHU_DRIVE_FOLDER_TOKEN: str = ""
     FEISHU_DRIVE_DOMAIN: str = "my.feishu.cn"
     QUALITY_GATE_ENABLE: bool = True
