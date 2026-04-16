@@ -300,12 +300,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
 import { updateTaskStatusInHistory } from '../utils/taskHistory'
-import MindMap from '../components/MindMap.vue'
+import type { TaskDetail, TestCase } from '../types'
+
+const MindMap = defineAsyncComponent(() => import('../components/MindMap.vue'))
 
 type PhaseKey = 'analysis' | 'generation' | 'review'
 
@@ -320,8 +322,9 @@ const selectedStage = ref<PhaseKey>('analysis')
 const reviewEditableCases = ref<any[]>([])
 const savingReviewCases = ref(false)
 
-const task = ref<any>({
+const task = ref<TaskDetail>({
   id: taskId,
+  task_name: '',
   status: 'pending',
   phases: {
     analysis: { status: 'pending', label: '需求分析', data: null },
@@ -426,16 +429,16 @@ const showFinalArtifacts = computed(() => {
   return phases.generation?.status === 'completed' && phases.review?.status === 'completed'
 })
 
-const cases = computed<any[]>(() => {
+const cases = computed<TestCase[]>(() => {
   const data = task.value.phases?.generation?.data
-  let result: any[] = []
+  let result: Record<string, unknown>[] = []
   if (data && typeof data === 'object') {
-    result = data.cases ?? []
+    result = (data as Record<string, unknown>).cases as Record<string, unknown>[] ?? []
   }
-  return result.map((item: any) => ({
+  return result.map((item: Record<string, unknown>) => ({
     ...item,
     adoption_status: item?.adoption_status === 'rejected' ? 'rejected' : 'accepted',
-  }))
+  })) as TestCase[]
 })
 
 const sourceRequirementText = computed(() => {
