@@ -39,9 +39,17 @@ class Settings(BaseSettings):
     LLM_STEP_RETRIES: int = 0
     LLM_MAX_SOURCE_CHARS: int = 32000
     LLM_MAX_ANALYSIS_CHARS_FOR_STRATEGY: int = 12000
+    EMBEDDING_MODEL: str = ""
 
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
 
 settings = Settings()
+
+if settings.JWT_SECRET_KEY == "please-change-this-secret":
+    import warnings
+    warnings.warn(
+        "JWT_SECRET_KEY 使用默认值，请在 .env 中设置安全的密钥！",
+        stacklevel=1,
+    )
