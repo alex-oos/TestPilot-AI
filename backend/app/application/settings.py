@@ -14,7 +14,7 @@ class AppSettings:
     api_prefix: str = "/api"
 
     cors_origin_enable: bool = True
-    allow_origins: tuple[str, ...] = ("*",)
+    allow_origins: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8001", "http://127.0.0.1:8001")
     allow_credentials: bool = True
     allow_methods: tuple[str, ...] = ("*",)
     allow_headers: tuple[str, ...] = ("*",)
