@@ -9,6 +9,9 @@ from typing import Any
 
 import chromadb
 from loguru import logger
+from openai import AsyncOpenAI
+
+from app.core.config import settings
 
 
 CHUNK_MAX_CHARS = 700
@@ -120,6 +123,26 @@ class RequirementKnowledgeBase:
         db_path.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(db_path))
         self.collection = self.client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
+
+        self._embedding_model: str = (settings.EMBEDDING_MODEL or "").strip()
+        self._openai_client: AsyncOpenAI | None = None
+        if self._embedding_model:
+            api_key = settings.LLM_API_KEY or "not-needed"
+            base_url = settings.LLM_BASE_URL.rstrip("/") if settings.LLM_BASE_URL else None
+            self._openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    async def _compute_embedding(self, text: str) -> list[float]:
+        if not self._embedding_model or self._openai_client is None:
+            return _hash_embedding(text)
+        try:
+            response = await self._openai_client.embeddings.create(
+                model=self._embedding_model,
+                input=text,
+            )
+            return response.data[0].embedding
+        except Exception as exc:
+            logger.warning("Embedding API call failed, falling back to hash: {}", exc)
+            return _hash_embedding(text)
 
     def ingest_document(
         self,
