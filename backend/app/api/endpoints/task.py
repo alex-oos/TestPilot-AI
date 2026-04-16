@@ -1,8 +1,9 @@
 import io
-from fastapi import APIRouter, Form, File, UploadFile, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, Form, File, UploadFile, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from loguru import logger
+from app.core.auth import get_current_user
 from app.core.response import success
 from app.services import file_service
 from app.services import task_service
@@ -21,6 +22,7 @@ async def upload_local_file(
     file: UploadFile = File(...),
     task_name: Optional[str] = Form(None),
     submitter: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """仅上传本地文件到后台，不立即执行分析。"""
     data = await file_service.upload_local_file_task(
@@ -37,6 +39,7 @@ async def start_uploaded_task(
     task_id: str,
     background_tasks: BackgroundTasks,
     submitter: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """启动已上传任务，进入 AI 需求分析流水线。"""
     data = await test_case_generation_service.start_generation_task(
@@ -62,6 +65,7 @@ async def submit_generation_task_stream(
     manual_description: Optional[str] = Form(None),
     related_project: Optional[str] = Form(None),
     submitter: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     提交任务并进入后台队列执行：
@@ -107,6 +111,7 @@ async def generate_test_cases_stream_direct(
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     新版流式接口：
@@ -174,13 +179,13 @@ async def stream_task_progress(task_id: str):
 
 
 @router.get("/tasks/{task_id}")
-async def get_task_status(request: Request, task_id: str):
+async def get_task_status(request: Request, task_id: str, current_user: dict = Depends(get_current_user)):
     """获取任务当前状态（轮询备用方案）。"""
     return success(await task_service.get_task_status(task_id), request.state.tid)
 
 
 @router.post("/tasks/{task_id}/retries")
-async def retry_task(request: Request, task_id: str, background_tasks: BackgroundTasks):
+async def retry_task(request: Request, task_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     """
     重试任务：复用同一个任务 ID 重置后重新执行。
     本地文件任务会复用历史保存的 source_text。
@@ -190,7 +195,7 @@ async def retry_task(request: Request, task_id: str, background_tasks: Backgroun
 
 
 @router.put("/tasks/{task_id}/review-cases")
-async def update_review_cases(request: Request, task_id: str, payload: UpdateReviewCasesRequest):
+async def update_review_cases(request: Request, task_id: str, payload: UpdateReviewCasesRequest, current_user: dict = Depends(get_current_user)):
     """评审后修改测试用例，并删除不采纳的用例。"""
     data = await test_case_generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
     return success(data, request.state.tid)
@@ -206,6 +211,7 @@ async def list_tasks(
     source_type: Optional[str] = None,
     status: Optional[str] = None,
     submitter: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """获取任务列表（按更新时间倒序）。"""
     data = await task_service.list_tasks(
@@ -221,21 +227,21 @@ async def list_tasks(
 
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(request: Request, task_id: str):
+async def delete_task(request: Request, task_id: str, current_user: dict = Depends(get_current_user)):
     """删除单个任务。"""
     data = await task_service.delete_task(task_id)
     return success(data, request.state.tid)
 
 
 @router.delete("/tasks")
-async def batch_delete_tasks(request: Request, payload: DeleteTasksRequest):
+async def batch_delete_tasks(request: Request, payload: DeleteTasksRequest, current_user: dict = Depends(get_current_user)):
     """批量删除任务。"""
     data = await task_service.batch_delete_tasks(payload.task_ids)
     return success(data, request.state.tid)
 
 
 @router.post("/tasks/exports/excel")
-async def export_excel(request: ExportRequest):
+async def export_excel(request: ExportRequest, current_user: dict = Depends(get_current_user)):
     """导出测试用例为 Excel 文件"""
     if not request.cases:
         raise HTTPException(status_code=400, detail="用例列表不能为空")
@@ -248,7 +254,7 @@ async def export_excel(request: ExportRequest):
 
 
 @router.post("/tasks/exports/xmind")
-async def export_xmind(request: ExportRequest):
+async def export_xmind(request: ExportRequest, current_user: dict = Depends(get_current_user)):
     """导出测试用例为 XMind 文件"""
     if not request.cases:
         raise HTTPException(status_code=400, detail="用例列表不能为空")
@@ -261,14 +267,14 @@ async def export_xmind(request: ExportRequest):
 
 
 @router.post("/tasks/sync/ms")
-async def sync_to_ms(request: Request, payload: SyncRequest):
+async def sync_to_ms(request: Request, payload: SyncRequest, current_user: dict = Depends(get_current_user)):
     """同步测试用例到 MS 测试管理平台"""
     result = await test_case_generation_service.sync_to_ms(payload.cases)
     return success(result, request.state.tid)
 
 
 @router.get("/tasks/{task_id}/mindmap-data")
-async def get_task_mindmap_data(request: Request, task_id: str):
+async def get_task_mindmap_data(request: Request, task_id: str, current_user: dict = Depends(get_current_user)):
     """获取任务的思维导图树形结构数据"""
     from app.services import task_manager
     from typing import List, Dict, Any
