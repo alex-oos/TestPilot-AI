@@ -39,6 +39,13 @@ request.interceptors.response.use(
     return response
   },
   (error) => {
+    if (error?.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('username')
+      localStorage.removeItem('user_id')
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
     const message =
       error?.response?.data?.msg ||
       error?.response?.data?.detail ||
