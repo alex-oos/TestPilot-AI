@@ -12,6 +12,7 @@
     "@tailwindcss/vite": "^4.2.1",
     "axios": "^1.13.6",
     "element-plus": "^2.13.5",
+    "pinia": "^3.0.4",
     "simple-mind-map": "^0.14.0-fix.2",
     "tailwindcss": "^4.2.1",
     "vue": "^3.5.30",
