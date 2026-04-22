@@ -423,8 +423,27 @@ async def run_generation_pipeline(
             logger.info(f"Task {task_id} | Phase 3: AI Review")
             review = await run_ai_step(lambda: review_test_cases(cases, analysis), "测试用例评审")
             reviewed_cases = review.get("reviewed_cases") if isinstance(review, dict) else None
+            original_count = len(cases)
             if isinstance(reviewed_cases, list) and reviewed_cases:
-                cases = reviewed_cases
+                # 防御：若 LLM 截断/失误导致 reviewed_cases 数量明显少于原用例，
+                # 则保留原用例 + 任何新增（按 id 去重合并），绝不让评审阶段"丢用例"。
+                if len(reviewed_cases) < max(original_count - 1, int(original_count * 0.9)):
+                    logger.warning(
+                        f"评审返回 {len(reviewed_cases)} 条 < 原 {original_count} 条，疑似截断；"
+                        f"自动合并去重以保留原用例。"
+                    )
+                    by_id = {int(c.get('id', 0) or 0): c for c in cases}
+                    next_id = max(by_id.keys(), default=0) + 1
+                    for rc in reviewed_cases:
+                        rid = int(rc.get('id', 0) or 0)
+                        if rid <= 0 or rid in by_id:
+                            rid = next_id
+                            next_id += 1
+                            rc['id'] = rid
+                        by_id[rid] = rc
+                    cases = list(by_id.values())
+                else:
+                    cases = reviewed_cases
                 await task_manager.update_phase(
                     task_id,
                     "generation",
