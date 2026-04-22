@@ -10,43 +10,92 @@ from app.ai.parsers import (
     _needs_case_repair,
     _fill_case_blanks,
 )
+from app.ai.prompts import DEFAULT_SUPPLEMENT_PROMPT
 from app.ai.role_config import _load_role_config, _raise_if_llm_error
 
 
-async def _revise_cases_from_review(
+GENERATION_MIN_TOKENS = 16384
+REVIEW_MIN_TOKENS = 8192
+
+
+def _bumped_max_tokens(role_cfg: Dict[str, Any], minimum: int) -> int:
+    """For long-form generation, ensure we don't truncate at small caps like 4096."""
+    raw = role_cfg.get("max_tokens")
+    try:
+        current = int(raw) if raw is not None else 0
+    except Exception:
+        current = 0
+    return max(current, minimum)
+
+
+async def _supplement_cases_from_review(
     *,
     role_cfg: Dict[str, Any],
-    original_cases: List[Dict[str, Any]],
+    existing_cases: List[Dict[str, Any]],
     analysis: str,
     review: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    revise_prompt = (
-        "你是测试用例修正助手。请依据需求分析与评审结果，输出修正后的完整测试用例列表。"
-        "必须只返回 JSON 数组，不要 markdown，不要解释。字段严格为："
-        "id,module,title,precondition,steps,expected_result,priority。"
-    )
-    revise_messages = [
-        {"role": "system", "content": revise_prompt},
+    """根据评审 missing_scenarios 自动补充新增用例（只补新增，不改原有）。"""
+    missing = review.get("missing_scenarios") if isinstance(review, dict) else None
+    if not isinstance(missing, list) or not missing:
+        return []
+
+    next_id = max((int(c.get("id", 0) or 0) for c in existing_cases), default=0) + 1
+    next_id = max(next_id, 1001)
+
+    messages = [
+        {"role": "system", "content": DEFAULT_SUPPLEMENT_PROMPT},
         {
             "role": "user",
             "content": (
                 f"【需求分析】\n{analysis}\n\n"
-                f"【原始用例】\n{json.dumps(original_cases, ensure_ascii=False, indent=2)}\n\n"
-                f"【评审结果】\n{json.dumps(review, ensure_ascii=False, indent=2)}\n"
+                f"【已有用例标题清单（避免重复）】\n"
+                + "\n".join(f"- [{c.get('module','')}] {c.get('title','')}" for c in existing_cases)
+                + "\n\n"
+                f"【评审专家指出的缺失场景】\n{json.dumps(missing, ensure_ascii=False, indent=2)}\n\n"
+                f"请从 id={next_id} 开始递增编号，**只输出新增用例**。"
             ),
         },
     ]
-    revised_raw = await llm_client.chat(
-        messages=revise_messages,
-        temperature=0,
-        model=role_cfg["model"],
-        api_key=role_cfg.get("api_key"),
-        base_url=role_cfg.get("base_url"),
-        max_tokens=role_cfg.get("max_tokens"),
-        top_p=role_cfg.get("top_p"),
-    )
-    _raise_if_llm_error(revised_raw, "测试用例评审后修正")
-    return _parse_cases_payload(revised_raw)
+    async def _call(extra_user_hint: str = "") -> str:
+        msgs = list(messages)
+        if extra_user_hint:
+            msgs.append({"role": "user", "content": extra_user_hint})
+        return await llm_client.chat(
+            messages=msgs,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            model=role_cfg["model"],
+            api_key=role_cfg.get("api_key"),
+            base_url=role_cfg.get("base_url"),
+            max_tokens=_bumped_max_tokens(role_cfg, GENERATION_MIN_TOKENS),
+            top_p=role_cfg.get("top_p"),
+        )
+
+    raw = await _call()
+    if isinstance(raw, str) and raw.strip().lower().startswith("error:"):
+        logger.warning(f"补充用例 LLM 调用失败，跳过: {raw}")
+        return []
+    try:
+        parsed = _parse_cases_payload(raw)
+        if parsed:
+            return parsed
+        raise ValueError("返回的 cases 数组为空")
+    except Exception as exc:
+        logger.warning(f"补充用例首次解析失败，重试一次: {exc}")
+        retry_hint = (
+            f"上一次响应未生成有效用例。请严格按要求，为每个 missing_scenario 至少生成一条用例，"
+            f"必须返回非空 cases 数组（至少 {len(missing)} 条）。直接输出 JSON。"
+        )
+        try:
+            retry_raw = await _call(retry_hint)
+            if isinstance(retry_raw, str) and retry_raw.strip().lower().startswith("error:"):
+                logger.warning(f"补充用例重试 LLM 失败: {retry_raw}")
+                return []
+            return _parse_cases_payload(retry_raw)
+        except Exception as retry_exc:
+            logger.warning(f"补充用例重试仍失败，跳过: {retry_exc}")
+            return []
 
 
 async def analyze_requirements(text_content: str) -> str:
@@ -117,12 +166,17 @@ async def generate_test_cases(design_result: str, historical_requirements_contex
             {
                 "role": "user",
                 "content": (
-                    "【历史相似需求（优先参考）】\n"
+                    "【历史相似用例（仅供测试设计风格参考，不得照抄）】\n"
                     f"{history_context}\n\n"
                     "【当前需求测试策略】\n"
                     f"{design_result}\n\n"
-                    "要求：生成的测试用例需体现对历史相似需求的复用与补充。"
-                    "请直接返回合法json对象，包含cases数组字段。每条用例必须有非空 steps 和 expected_result。"
+                    "**严格要求**：\n"
+                    "1. 必须**只针对**【当前需求测试策略】中描述的业务功能编写用例，禁止引入历史用例中出现的"
+                    "但当前需求并不存在的业务术语（如其它项目的模块名、字段名、状态名等）。\n"
+                    "2. 历史用例**仅用于参考测试用例的写法/颗粒度**，不要复制其业务内容到模块/标题/步骤。\n"
+                    "3. module 字段必须来自【当前需求测试策略】里的真实业务模块，禁止出现"
+                    "'【复用历史经验】'、'参考历史'等前缀。\n"
+                    "请直接返回合法 json 对象，包含 cases 数组字段。每条用例必须有非空 steps 和 expected_result。"
                 ),
             },
         ]
@@ -147,7 +201,7 @@ async def generate_test_cases(design_result: str, historical_requirements_contex
         model=role_cfg["model"],
         api_key=role_cfg.get("api_key"),
         base_url=role_cfg.get("base_url"),
-        max_tokens=role_cfg.get("max_tokens"),
+        max_tokens=_bumped_max_tokens(role_cfg, GENERATION_MIN_TOKENS),
         top_p=role_cfg.get("top_p"),
     )
     _raise_if_llm_error(cases_json_str, "测试用例生成")
@@ -174,7 +228,7 @@ async def generate_test_cases(design_result: str, historical_requirements_contex
             model=role_cfg["model"],
             api_key=role_cfg.get("api_key"),
             base_url=role_cfg.get("base_url"),
-            max_tokens=role_cfg.get("max_tokens"),
+            max_tokens=_bumped_max_tokens(role_cfg, GENERATION_MIN_TOKENS),
             top_p=role_cfg.get("top_p"),
         )
         _raise_if_llm_error(repaired, "测试用例修复")
@@ -216,7 +270,7 @@ async def generate_test_cases(design_result: str, historical_requirements_contex
             model=role_cfg["model"],
             api_key=role_cfg.get("api_key"),
             base_url=role_cfg.get("base_url"),
-            max_tokens=role_cfg.get("max_tokens"),
+            max_tokens=_bumped_max_tokens(role_cfg, GENERATION_MIN_TOKENS),
             top_p=role_cfg.get("top_p"),
         )
         _raise_if_llm_error(repaired_cases_raw, "测试用例补全")
@@ -263,7 +317,7 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
         model=role_cfg["model"],
         api_key=role_cfg.get("api_key"),
         base_url=role_cfg.get("base_url"),
-        max_tokens=role_cfg.get("max_tokens"),
+        max_tokens=_bumped_max_tokens(role_cfg, REVIEW_MIN_TOKENS),
         top_p=role_cfg.get("top_p"),
     )
     _raise_if_llm_error(review_str, "测试用例评审")
@@ -290,7 +344,7 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
             model=role_cfg["model"],
             api_key=role_cfg.get("api_key"),
             base_url=role_cfg.get("base_url"),
-            max_tokens=role_cfg.get("max_tokens"),
+            max_tokens=_bumped_max_tokens(role_cfg, REVIEW_MIN_TOKENS),
             top_p=role_cfg.get("top_p"),
         )
         _raise_if_llm_error(repaired, "测试用例评审修复")
@@ -305,17 +359,34 @@ async def review_test_cases(cases: List[Dict[str, Any]], analysis: str) -> Dict[
             )
             raise RuntimeError("AI评审解析失败：模型未返回合法 JSON") from repair_error
 
-    if not isinstance(review.get("reviewed_cases"), list) or not review.get("reviewed_cases"):
-        try:
-            review["reviewed_cases"] = await _revise_cases_from_review(
-                role_cfg=role_cfg,
-                original_cases=cases,
-                analysis=analysis,
-                review=review,
-            )
-        except Exception as revise_error:
-            logger.warning(f"Review cases auto-revise failed, fallback to original cases: {revise_error}")
-            review["reviewed_cases"] = cases
+    # === 关键修复 ===
+    # 1. 抛弃 LLM 返回的 reviewed_cases —— 它经常被 max_tokens 截断，导致用例丢失。
+    # 2. 始终保留原始用例，并根据 missing_scenarios 增量补充新用例。
+    original_count = len(cases)
+    final_cases = list(cases)
+    supplemented: List[Dict[str, Any]] = []
+    try:
+        supplemented = await _supplement_cases_from_review(
+            role_cfg=role_cfg,
+            existing_cases=cases,
+            analysis=analysis,
+            review=review,
+        )
+    except Exception as supplement_error:
+        logger.warning(f"补充用例失败，将仅保留原用例：{supplement_error}")
+        supplemented = []
+
+    if supplemented:
+        final_cases.extend(supplemented)
+        logger.info(
+            f"评审完成：原用例 {original_count} 条，补充 {len(supplemented)} 条，合计 {len(final_cases)} 条。"
+        )
+    else:
+        logger.info(f"评审完成：原用例 {original_count} 条，未发现需补充的场景。")
+
+    review["reviewed_cases"] = final_cases
+    review["original_case_count"] = original_count
+    review["supplemented_case_count"] = len(supplemented)
 
     logger.success(f"Test case review completed. Quality score: {review.get('quality_score', 'N/A')}")
     return review

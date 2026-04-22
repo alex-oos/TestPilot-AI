@@ -188,8 +188,22 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
 
     def _derive_module(raw_module: str, title: str, steps: str, idx: int) -> str:
         module = str(raw_module or "").strip()
-        if module and module not in {"通用", "默认", "general", "General"}:
+        if module and module not in {"通用", "默认", "general", "General", "默认模块", "未分类"}:
             return module
+
+        clean_title = re.sub(r"^验证[：:\s]*", "", str(title or "").strip())
+        for sep in ["-", "—", "–", "－", "_"]:
+            if sep in clean_title:
+                head = clean_title.split(sep, 1)[0].strip()
+                if 2 <= len(head) <= 30:
+                    return head
+        for sep in ["在", "时", "下", "前", "后", "中", "对", "进行"]:
+            pos = clean_title.find(sep)
+            if 2 <= pos <= 30:
+                head = clean_title[:pos].strip()
+                if head:
+                    return head
+
         text = f"{title}\n{steps}"
         mapping = [
             ("灰度", "灰度控制"),
@@ -209,7 +223,9 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
         for keyword, module_name in mapping:
             if keyword in lower:
                 return module_name
-        return f"功能模块{idx}"
+        if 2 <= len(clean_title) <= 20:
+            return clean_title
+        return "默认模块"
 
     normalized: List[Dict[str, Any]] = []
     for idx, item in enumerate(cases, start=1):

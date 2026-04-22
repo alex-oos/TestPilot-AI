@@ -4,6 +4,24 @@ from typing import List, Dict, Any, Optional
 from app.core.config import settings
 from openai import AsyncOpenAI
 
+
+def _is_reasoning_model(model_name: str) -> bool:
+    """识别 OpenAI 新一代推理/旗舰模型 (gpt-5*, o1*, o3*, o4*)。
+    这类模型使用 `max_completion_tokens` 而非 `max_tokens`，
+    并且只支持默认的 temperature=1。
+    """
+    if not model_name:
+        return False
+    name = model_name.lower().strip()
+    return (
+        name.startswith("gpt-5")
+        or name.startswith("gpt5")
+        or name.startswith("o1")
+        or name.startswith("o3")
+        or name.startswith("o4")
+    )
+
+
 class UniversalLLMClient:
     """
     Universal Client for Large Language Models using OpenAI SDK.
@@ -53,18 +71,23 @@ class UniversalLLMClient:
                 f"Sending LLM request via OpenAI SDK | Model: {model_in_use} | Base: {base_url_in_use}"
             )
 
-            # Prepare completion parameters
+            is_reasoning = _is_reasoning_model(model_in_use)
+
             params: Dict[str, Any] = {
                 "model": model_in_use,
                 "messages": messages,
-                "temperature": temperature,
             }
 
-            if max_tokens is not None:
-                params["max_tokens"] = max_tokens
+            if not is_reasoning:
+                params["temperature"] = temperature
+                if top_p is not None:
+                    params["top_p"] = top_p
 
-            if top_p is not None:
-                params["top_p"] = top_p
+            if max_tokens is not None:
+                if is_reasoning:
+                    params["max_completion_tokens"] = max_tokens
+                else:
+                    params["max_tokens"] = max_tokens
 
             if response_format:
                 params["response_format"] = response_format
@@ -124,9 +147,10 @@ class UniversalLLMClient:
             else:
                 client = self.client
 
-            response = await client.chat.completions.create(
-                model=model_in_use,
-                messages=[
+            is_reasoning = _is_reasoning_model(model_in_use)
+            vision_params: Dict[str, Any] = {
+                "model": model_in_use,
+                "messages": [
                     {
                         "role": "user",
                         "content": [
@@ -135,9 +159,14 @@ class UniversalLLMClient:
                         ],
                     }
                 ],
-                temperature=0,
-                max_tokens=max_tokens or 2000,
-            )
+            }
+            if is_reasoning:
+                vision_params["max_completion_tokens"] = max_tokens or 2000
+            else:
+                vision_params["temperature"] = 0
+                vision_params["max_tokens"] = max_tokens or 2000
+
+            response = await client.chat.completions.create(**vision_params)
             if response.choices and response.choices[0].message and response.choices[0].message.content:
                 return response.choices[0].message.content.strip()
             return "Error: OCR response content is empty."
