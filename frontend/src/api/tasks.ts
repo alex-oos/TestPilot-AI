@@ -24,6 +24,10 @@ export function buildTaskEventsUrl(taskId: string) {
   return `/api/tasks/${taskId}/events`
 }
 
+export async function getTaskMindMapData(taskId: string) {
+  return request.get(`/tasks/${taskId}/mindmap-data`)
+}
+
 export async function updateReviewCases(taskId: string, payload: any) {
   return request.put(`/tasks/${taskId}/review-cases`, payload)
 }

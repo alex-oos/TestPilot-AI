@@ -303,7 +303,14 @@
 import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import {
+  getTaskDetail,
+  updateReviewCases,
+  exportCasesExcel,
+  exportCasesXmind,
+  syncCasesToMs,
+  getTaskMindMapData,
+} from '../api/tasks'
 import { updateTaskStatusInHistory } from '../utils/taskHistory'
 import type { TaskDetail, TestCase } from '../types'
 
@@ -354,19 +361,34 @@ onMounted(async () => {
 
 onUnmounted(() => {
   eventSource?.close()
+  stopAutoRefresh()
 })
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function shouldStopAutoRefresh(status?: string) {
+  return (
+    status === 'completed' ||
+    status === 'waiting_decision' ||
+    status === 'manual_reviewing' ||
+    isTaskFailed(status)
+  )
+}
 
 async function fetchTaskSnapshot() {
   try {
-    const resp = await axios.get(`/api/tasks/${taskId}`)
+    const resp = await getTaskDetail(taskId)
     if (resp.data?.data) {
       task.value = { ...task.value, ...resp.data.data }
       hydrateReviewEditableCases(true)
       syncExpandedStage()
       updateTaskStatusInHistory(taskId, task.value.status)
+      if (shouldStopAutoRefresh(task.value.status)) {
+        stopAutoRefresh()
+      }
     }
-  } catch {
-    // snapshot only for initial hydration; ignore if not available yet
+  } catch (err: any) {
+    console.error('[TaskDetail] 获取任务详情失败:', err?.message || err)
   }
 }
 
@@ -381,8 +403,9 @@ function startSSE() {
       syncExpandedStage()
       updateTaskStatusInHistory(taskId, task.value.status)
 
-      if (data.status === 'completed' || isTaskFailed(data.status) || data.status === 'waiting_decision') {
+      if (shouldStopAutoRefresh(data.status)) {
         eventSource?.close()
+        stopAutoRefresh()
       }
     } catch (err) {
       console.error('SSE parse error', err)
@@ -391,6 +414,24 @@ function startSSE() {
 
   eventSource.onerror = () => {
     eventSource?.close()
+    eventSource = null
+    if (!shouldStopAutoRefresh(task.value.status)) {
+      startPolling()
+    }
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(() => {
+    fetchTaskSnapshot()
+  }, 3000)
+}
+
+function stopAutoRefresh() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -411,7 +452,8 @@ const selectedStageData = computed(() => {
 })
 
 const reachableStageIndex = computed(() => {
-  if (task.value.status === 'completed' || task.value.status === 'waiting_decision') return 3
+  const finalStatuses = ['completed', 'waiting_decision', 'manual_reviewing']
+  if (finalStatuses.includes(task.value.status)) return 3
 
   const phases = task.value.phases ?? {}
   if (phases.review?.status && phases.review.status !== 'pending') return 3
@@ -500,11 +542,12 @@ const bannerClass = computed(() => {
   switch (task.value.status) {
     case 'queued': return 'bg-gradient-to-r from-slate-500 to-slate-600 text-white'
     case 'running': return 'bg-gradient-to-r from-blue-600 to-blue-500 text-white'
-    case 'waiting_decision': return 'bg-gradient-to-r from-amber-500 to-orange-500 text-white'
+    case 'waiting_decision':
+    case 'manual_reviewing': return 'bg-gradient-to-r from-amber-500 to-orange-500 text-white'
     case 'completed': return 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
-    case 'analysis_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
-    case 'generation_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
-    case 'review_failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
+    case 'analysis_failed':
+    case 'generation_failed':
+    case 'review_failed':
     case 'failed': return 'bg-gradient-to-r from-red-500 to-rose-600 text-white'
     default: return 'bg-gray-100 text-gray-600'
   }
@@ -515,10 +558,11 @@ const bannerIcon = computed(() => {
     case 'queued': return '🕒'
     case 'running': return '🤖'
     case 'waiting_decision': return '📩'
+    case 'manual_reviewing': return '🧐'
     case 'completed': return '🎉'
-    case 'analysis_failed': return '❌'
-    case 'generation_failed': return '❌'
-    case 'review_failed': return '❌'
+    case 'analysis_failed':
+    case 'generation_failed':
+    case 'review_failed':
     case 'failed': return '❌'
     default: return '⏳'
   }
@@ -531,6 +575,7 @@ const bannerTitle = computed(() => {
     case 'pending': return '任务已创建，等待执行...'
     case 'running': return 'AI 正在生成测试用例...'
     case 'waiting_decision': return '已发送钉钉通知，等待采纳确认'
+    case 'manual_reviewing': return 'AI 已完成生成，等待人工审核'
     case 'completed': return '全部完成！测试用例已生成'
     case 'analysis_failed': return '需求分析异常'
     case 'generation_failed': return '用例编写异常'
@@ -544,6 +589,9 @@ const bannerSubtitle = computed(() => {
   const running = Object.values(task.value.phases ?? {}).find((p: any) => p.status === 'running') as any
   if (running) return `当前正在执行：${running.label}`
   if (task.value.status === 'waiting_decision') return '请在钉钉中确认是否采纳'
+  if (task.value.status === 'manual_reviewing') {
+    return `已生成 ${cases.value.length} 条用例，请在下方"评审修改"中确认是否采纳`
+  }
   if (task.value.status === 'completed') return `共生成 ${cases.value.length} 条测试用例，质量评分 ${review.value.quality_score ?? '--'} 分`
   return '请稍候...'
 })
@@ -571,7 +619,7 @@ function syncExpandedStage() {
     return
   }
 
-  if (task.value.status === 'completed' || task.value.status === 'waiting_decision') {
+  if (['completed', 'waiting_decision', 'manual_reviewing'].includes(task.value.status)) {
     selectedStage.value = 'review'
     return
   }
@@ -670,7 +718,7 @@ async function saveReviewCases() {
         ...normalizeReviewCase(item, idx + 1),
       })),
     }
-    const resp = await axios.put(`/api/tasks/${taskId}/review-cases`, payload)
+    const resp = await updateReviewCases(taskId, payload)
     const data = resp.data?.data || {}
     if (data.task) {
       task.value = { ...task.value, ...data.task }
@@ -690,7 +738,7 @@ async function exportExcel() {
   if (!cases.value.length) return
   exporting.value.excel = true
   try {
-    const resp = await axios.post('/api/tasks/exports/excel', { cases: cases.value }, { responseType: 'blob' })
+    const resp = await exportCasesExcel(cases.value)
     downloadBlob(resp.data, 'test_cases.xlsx')
     ElMessage.success('Excel 导出成功')
   } catch {
@@ -704,11 +752,7 @@ async function exportXmind() {
   if (!cases.value.length) return
   exporting.value.xmind = true
   try {
-    const resp = await axios.post(
-      '/api/tasks/exports/xmind',
-      { cases: cases.value, title: 'AI自动生成测试用例' },
-      { responseType: 'blob' }
-    )
+    const resp = await exportCasesXmind(cases.value, 'AI自动生成测试用例')
     downloadBlob(resp.data, 'test_cases.xmind')
     ElMessage.success('XMind 文件导出成功')
   } catch {
@@ -722,7 +766,7 @@ async function syncMs() {
   if (!cases.value.length) return
   exporting.value.ms = true
   try {
-    const resp = await axios.post('/api/tasks/sync/ms', { cases: cases.value })
+    const resp = await syncCasesToMs(cases.value)
     ElMessage.success(resp.data.data.message || '同步成功')
   } catch {
     ElMessage.error('同步失败')
@@ -745,7 +789,7 @@ const mindMapData = ref<any>(null)
 
 async function fetchMindMapData() {
   try {
-    const resp = await axios.get(`/api/tasks/${taskId}/mindmap-data`)
+    const resp = await getTaskMindMapData(taskId)
     if (resp.data?.data?.root) {
       mindMapData.value = resp.data.data.root
       console.log('[思维导图] 数据加载成功')
@@ -755,11 +799,10 @@ async function fetchMindMapData() {
   }
 }
 
-// 在任务完成后加载思维导图数据
 watch(
   () => task.value.status,
   (newStatus) => {
-    if (['completed', 'waiting_decision'].includes(newStatus)) {
+    if (['completed', 'waiting_decision', 'manual_reviewing'].includes(newStatus)) {
       setTimeout(() => fetchMindMapData(), 500)
     }
   },
