@@ -39,7 +39,30 @@ class Settings(BaseSettings):
     LLM_STEP_RETRIES: int = 0
     LLM_MAX_SOURCE_CHARS: int = 32000
     LLM_MAX_ANALYSIS_CHARS_FOR_STRATEGY: int = 12000
+
+    # === Embedding 设置 ===
+    # 真实 embedding 模型（OpenAI 兼容 API）。留空则降级为 hash embedding（仅供原型）。
+    # 推荐: text-embedding-3-small（1536 维，便宜快速）
     EMBEDDING_MODEL: str = ""
+    # 如果 embedding 服务和 LLM 不在同一个 base_url（例如 LLM 走代理但 embedding 走 OpenAI 官方），
+    # 可单独配置。留空则复用 LLM_BASE_URL / LLM_API_KEY。
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_DIM: int = 1536  # text-embedding-3-small=1536; text-embedding-3-large=3072
+    EMBEDDING_BATCH_SIZE: int = 32
+
+    # === 向量数据库后端 ===
+    # 可选: "qdrant" (推荐) | "chroma" (兼容旧数据)
+    VECTOR_DB_BACKEND: str = "qdrant"
+    # Qdrant 嵌入式模式的本地路径（相对 backend/ 目录）。生产环境可改为远程 URL。
+    QDRANT_PATH: str = "./data/qdrant_db"
+    QDRANT_URL: str = ""  # 例如 "http://qdrant:6333"; 设置后优先使用 server 模式
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION: str = "test_case_kb_v3"
+
+    # 跨任务召回相似度门槛（真实 embedding 用 0.55；hash embedding 用 0.65+）
+    KB_SIMILARITY_THRESHOLD: float = 0.55
+    KB_TOP_K: int = 5
 
     class Config:
         env_file = ".env"

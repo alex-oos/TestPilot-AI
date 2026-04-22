@@ -49,6 +49,8 @@ pandas==3.0.1
 pypdf==6.9.1
 python-docx==1.2.0
 chromadb==1.1.1
+qdrant-client>=1.13.0
+tenacity>=8.2.0
 pytest>=8.0
 pytest-asyncio>=0.23
 coverage>=7.4
