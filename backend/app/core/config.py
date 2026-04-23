@@ -64,6 +64,42 @@ class Settings(BaseSettings):
     KB_SIMILARITY_THRESHOLD: float = 0.55
     KB_TOP_K: int = 5
 
+    # === QA Skills（基于 awesome-qa-skills 的 SKILL 化 prompt 体系） ===
+    # 开关：True = 使用 skill 拼装 prompt；False = 回退到旧的硬编码 prompts.py
+    USE_QA_SKILLS: bool = True
+    # skill 库根目录（相对 backend/ 目录）。默认指向 app/ai/skills/library
+    QA_SKILLS_DIR: str = ""
+    # 角色 → skill_id 覆盖（留空使用 catalog 中的默认值）
+    QA_SKILL_ANALYSIS: str = ""
+    QA_SKILL_GENERATION: str = ""
+    QA_SKILL_REVIEW: str = ""
+    QA_SKILL_SUPPLEMENT: str = ""
+    QA_SKILL_DISCOVER: str = ""  # 智能路由 skill，留空使用 discover-testing
+
+    # 项目级 overlay（多个用逗号分隔）。需在 library/_overlays/<name>/ 创建。
+    QA_SKILL_OVERLAY: str = ""
+
+    # Few-shot 与 token 控制
+    QA_SKILL_FEWSHOT_ENABLED: bool = True
+    QA_SKILL_FEWSHOT_MAX_CHARS: int = 1200
+    QA_SKILL_PROMPT_TOKEN_BUDGET: int = 8000   # 0 = 不限制
+    QA_SKILL_EXTRA_PROMPT_MAX_CHARS: int = 4000
+
+    # 智能路由：根据需求文档自动选择 generation skill
+    QA_SKILL_DISCOVER_ENABLED: bool = False
+
+    # 三层降级链：skill -> contract-only -> legacy(prompts.py)；False=两层
+    QA_SKILL_LEGACY_FALLBACK_ENABLED: bool = True
+
+    # A/B 实验：同任务并行用两个 skill_id 跑 generation，仅记录指标对比
+    QA_SKILL_AB_ENABLED: bool = False
+    QA_SKILL_AB_VARIANT_GENERATION: str = ""
+
+    # 启动健康检查严格模式：True = 任何 skill 失败/映射缺失都直接抛错（推荐生产）
+    QA_SKILL_HEALTH_STRICT: bool = False
+    # 是否把审计落库到独立 SQLite 表 skill_audits
+    QA_SKILL_AUDIT_PERSIST: bool = True
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
