@@ -100,6 +100,13 @@
           >
             生成行为配置
           </router-link>
+          <router-link
+            to="/config-center/skills"
+            class="block px-3 py-2 rounded-lg text-sm transition-all duration-200"
+            :class="route.path === '/config-center/skills' ? 'bg-slate-700 text-white' : 'hover:bg-slate-800 hover:text-white'"
+          >
+            QA Skills 中心
+          </router-link>
         </div>
       </nav>
 
@@ -188,6 +195,7 @@ const pageTitle = computed(() => {
     case route.path === '/config-center/prompts': return '配置中心 / 提示词配置'
     case route.path === '/config-center/notifications': return '配置中心 / 消息提醒'
     case route.path === '/config-center/behavior': return '配置中心 / 生成行为配置'
+    case route.path === '/config-center/skills': return '配置中心 / QA Skills 中心'
     case route.path.startsWith('/task/'): return '任务详情'
     default: return ''
   }
