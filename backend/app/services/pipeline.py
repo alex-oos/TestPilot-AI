@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from loguru import logger
-from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases, set_current_task_id
+from app.ai.skills import audit as skill_audit
 from app.core.config import settings
 from app.modules.persistence import config_center_store
 from app.modules.dingtalk import read_dingtalk_doc
@@ -200,6 +201,8 @@ async def run_generation_pipeline(
       4. manual_review → 人工审核（批量采纳后完成）
     """
     try:
+        # 设置审计上下文：本任务内所有 LLM 调用记录都会带上这个 task_id
+        set_current_task_id(task_id)
         behavior_cfg = await _validate_local_runtime_config(["analysis", "generation", "review"])
         ai_timeout_seconds = int(behavior_cfg.get("review_timeout_seconds") or 1500)
         analysis_sub_steps_state = {key: "pending" for key, _ in ANALYSIS_SUB_STEP_META}
@@ -384,6 +387,9 @@ async def run_generation_pipeline(
             }
         analysis_json_file = _save_phase_json(task_id, "analysis", analysis_payload)
         analysis_payload["analysis_json_file"] = analysis_json_file
+        analysis_payload["skill_audit"] = skill_audit.list_recent(
+            limit=20, task_id=task_id,
+        )
         analysis_phase_data.update(analysis_payload)
         await _push_analysis_phase("completed")
         
@@ -406,6 +412,10 @@ async def run_generation_pipeline(
         generation_payload = {
             "cases": cases,
             "output_mode": generation_output_mode,
+            "skill_audit": [
+                r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                if r.get("role") in ("generation", "discover")
+            ],
         }
         generation_json_file = _save_phase_json(task_id, "generation", {"cases": cases})
         generation_payload["cases_json_file"] = generation_json_file
@@ -452,6 +462,10 @@ async def run_generation_pipeline(
                         "cases": cases,
                         "output_mode": generation_output_mode,
                         "cases_json_file": _save_phase_json(task_id, "generation_reviewed", {"cases": cases}),
+                        "skill_audit": [
+                            r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                            if r.get("role") in ("generation", "discover")
+                        ],
                     },
                 )
                 await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(cases))
@@ -464,6 +478,10 @@ async def run_generation_pipeline(
             await task_manager.update_phase(task_id, "review", "completed", {
                 "review": review,
                 "output_mode": review_output_mode,
+                "skill_audit": [
+                    r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                    if r.get("role") in ("review", "supplement")
+                ],
             })
         else:
             review = {
