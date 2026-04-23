@@ -2,7 +2,274 @@
 
 AI 测试用例生成平台：支持飞书/钉钉文档、本地文件（含图片 OCR）、手动输入，完成需求分析 → 用例生成 → 用例评审 → 人工采纳 → 经验沉淀（向量库）全流程。
 
-## 本次版本改动总览（2026-04-22）
+## 本次版本改动总览（2026-04-22 第四轮 · QA Skills 工程化加固）
+
+> 主题：在第三轮 13 项增强的基础上做"工程化加固"——启动健康检查、真实 token 回填、独立审计表、Skill 依赖注入、Few-shot 智能选择、Discover 联合路由、Golden 回归、CLI 工具、前端可观测面板，共 **9 项二阶优化** 全部交付。
+
+### 一、本轮新增能力一览
+
+| # | 能力 | 关键模块 | 价值 |
+|---|------|---------|------|
+| R1 | **启动健康检查 + /health 接口** | `skills/health.py` + `core/event.py` + `/api/ai/skills/health` | 启动时遍历所有 skill 校验 `SKILL.md` / `description` / `primary_prompt` 长度 / semver / 角色映射有效性；支持 `QA_SKILL_HEALTH_STRICT=true` 失败直接 fail-fast |
+| R2 | **真实 Token 回填** | `llm.py` (`last_usage_ctx`) + `ai.py` (`_backfill_actual_tokens`) | 每次 LLM 调用后用 `response.usage.prompt_tokens / completion_tokens` 覆盖估算值，便于真实成本核算 |
+| R3 | **独立审计表 SQLite** | `skills/audit.py` (`init_audit_storage`/`query_persisted`/`get_token_usage_stats`) + `event.py` 启动建表 | 落库到 `skill_audits` 表，支持分页查询、按 role/skill/task 过滤、聚合统计、CSV 导出 |
+| R4 | **Skill 依赖注入** | `loader.py` (`requires` + 递归加载) + `builder.py` 拼装 | `SKILL.md` frontmatter 增加 `requires: [other-skill]`，加载主 skill 时自动注入依赖的 `primary_prompt` 作为辅助 system 段，环检测保护 |
+| R5 | **Few-shot 智能选择** | `builder._pick_example_for_role` | 不再固定取第一个示例：按 (kind 匹配, 与需求关键词重合, 长度接近 60% max_chars) 综合评分，提升示例相关性 |
+| R6 | **Discover 联合路由** | `skills/discover.py` (`route_combined` + `route_by_skill_tags`) | 关键词规则 + 中英文双语 + library 中 skill `tags` 加权，规则未命中时回退到 tags 评分；新增 candidates 列表便于调试 |
+| R7 | **Golden 回归测试** | `tests/test_skills_golden.py` (28 断言) | 固定输入 → 关键 system prompt 段必须出现 + token 区间合规 + health 必须通过；可加入 CI |
+| R8 | **CLI 工具** | `scripts/skills_cli.py` | `list / validate / show / diff / audit / audit-export / route` 一应俱全，零依赖跑通 |
+| R9 | **前端可观测面板** | `views/SkillsCenter.vue` 增加 `健康检查` `Token 统计` 两个 tab | 直接看每个 skill 的 issues/warnings；按 role/skill 维度看真实 token 累计、超预算次数、few-shot 命中率 |
+
+### 二、新增 / 增强的 API
+
+```
+GET    /api/ai/skills/health              # 启动级健康检查（SKILL.md 合法性 + 角色映射有效性）
+GET    /api/ai/skills/audit/persisted     # 持久化审计分页查询（limit/offset/role/task_id/skill_id）
+GET    /api/ai/skills/audit/stats         # 按 role/skill 聚合（calls/tokens/fewshot 命中）
+POST   /api/ai/skills/discover            # 升级为联合路由（关键词 + skill tags）
+```
+
+### 三、新增配置（`backend/.env`）
+
+```bash
+QA_SKILL_HEALTH_STRICT=false      # 启动健康检查失败是否 fail-fast（生产建议 true）
+QA_SKILL_AUDIT_PERSIST=true       # 是否落库到 skill_audits SQLite 表
+```
+
+### 四、SKILL.md frontmatter 新增字段
+
+```yaml
+---
+name: xxx
+description: xxx
+version: 1.0.0
+lang: zh
+tags: [api, generation]
+requires: [discover-testing]   # 新增：会自动加载并把 primary_prompt 拼入 system
+---
+```
+
+### 五、CLI 用法速查
+
+```bash
+# 列出所有 skill（id/版本/语种/资源数/hash）
+python backend/scripts/skills_cli.py list
+
+# 启动健康检查（同 /api/ai/skills/health）
+python backend/scripts/skills_cli.py validate
+
+# 查看单个 skill 详情
+python backend/scripts/skills_cli.py show testcase-writer-plus
+
+# 对比当前 skill 与外部 awesome-qa-skills 仓库的差异
+python backend/scripts/skills_cli.py diff testcase-writer-plus ~/repos/awesome-qa-skills/testcase-writer-plus
+
+# 查询审计（可加 --task TID --role generation）
+python backend/scripts/skills_cli.py audit --limit 20
+
+# 导出全量审计为 CSV
+python backend/scripts/skills_cli.py audit-export /tmp/skill_audits.csv
+
+# 路由调试
+python backend/scripts/skills_cli.py route "测试 REST API 安全性，包括 SQL 注入"
+```
+
+### 六、自测结果
+
+| 测试 | 项数 | 结果 |
+|------|------|------|
+| `tests/test_skills_smoke.py` | 100 | 100 / 0 |
+| `tests/test_skills_golden.py` | 28 | 28 / 0 |
+| 启动 health 检查 | 4 个 skill | 全部 ok（4 个仅 warning） |
+| 端到端 task `e996aa8d-…` | analysis + strategy 已完成 | tk_est=7711 → tk_actual=9501（回填生效）；strategy tk_est=9467 → tk_actual=9370 |
+| audit SQLite 落库 | 3 条 / 持续累加 | 持久化生效，`/api/ai/skills/audit/persisted` 可分页查询 |
+
+### 七、本轮关键修复
+
+- **路由冲突修复**：`/api/ai/skills/health` 必须在 `/api/ai/skills/{skill_id}` 之前注册，否则会被解析成 `skill_id=health` 报 404。
+- **审计落库时序**：`record()` 改为同步落库（< 1ms 写入），保证 `_backfill_actual_tokens` 能立刻找到刚写入的行。
+- **依赖加载防环**：`_load_uncached` 通过 `_visiting` 集合识别循环依赖并跳过。
+
+---
+
+## 上一轮版本改动（2026-04-22 第三轮 · QA Skills 全面增强）
+
+> 主题：在 Skills 化基础上做**深度优化**——few-shot 注入、智能路由、调用审计、项目级 overlay、A/B 实验、多语言、Token 预估告警、前端管理 UI 等 13 项能力全部落地。
+
+### 一、本轮新增能力一览
+
+| # | 能力 | 关键模块 | 价值 |
+|---|------|---------|------|
+| 1 | **SkillLoader 全量化** | `skills/loader.py` | 不只读 `prompts/`，还加载 `output-templates/` `examples/` `references/` `README.md`，附 `version` `lang` `tags` `content_hash` |
+| 2 | **Few-shot 注入（带反崩场）** | `skills/builder.py` | 自动从 skill examples/ 选一段示例 + 字段映射注解，提升步骤颗粒度，禁止 LLM 照抄示例字段名/业务术语 |
+| 3 | **调用审计** | `skills/audit.py` + `pipeline.py` | 每次 LLM 调用记录 `skill_id / version / hash / few-shot / tokens / over_budget`，写入 `task_details.skill_audit` + 进程内 ring buffer |
+| 4 | **三层降级链** | `ai.py` | skill → contract-only → legacy `prompts.py`，由 `QA_SKILL_LEGACY_FALLBACK_ENABLED` 控制 |
+| 5 | **Token 预估 + 阈值告警** | `builder._approx_token_count` | 中文按字、英文按 1/4 字符估算，超 `QA_SKILL_PROMPT_TOKEN_BUDGET` 自动 WARN |
+| 6 | **discover-testing 智能路由** | `skills/discover.py` | 关键词命中（API/移动/性能/安全/可访问性/自动化）→ 自动切对应 generation skill；不存在则降级回 testcase-writer-plus |
+| 7 | **前端 Skill 管理 UI** | `frontend/src/views/SkillsCenter.vue` | 配置中心新增"QA Skills 中心"页：角色映射、列表、单 skill 详情、路由调试、审计记录、热重载 |
+| 8 | **项目级 Overlay** | `library/_overlays/<name>/<skill_id>/` | 不污染主 skill 的前提下，叠加团队/项目特有 prompt/examples/templates，支持多 overlay 串联 |
+| 9 | **同步脚本** | `backend/scripts/sync_qa_skills.py` | 一键 diff + 同步 awesome-qa-skills 升级，自动校验 frontmatter 合法性 |
+| 10 | **多语言** | `_detect_lang` + frontmatter `lang` | 自动检测需求语种；如有 `<skill>-en` 兄弟 skill 可自动切换 |
+| 11 | **discover-testing skill 入库** | `library/discover-testing/` | 把官方路由 skill 复制为本地资源 |
+| 12 | **A/B 实验框架** | `skills/ab.py` + `ai.py` | 同任务并行跑 baseline + variant skill，比较模块覆盖/优先级分布/空白率，结果写审计供前端对比 |
+| 13 | **Skill 版本化 + frontmatter 增强** | `loader._parse_frontmatter` | 支持 `version` `lang` `tags` 字段，`content_hash` 跟踪叠加后内容指纹 |
+
+### 二、新增 / 增强的 API
+
+```
+GET    /api/ai/skills                 # 列出全部 skill + 角色映射 + 全局开关
+GET    /api/ai/skills?lang=zh         # 多语言过滤
+GET    /api/ai/skills/{id}            # 单 skill 全量内容（SKILL.md + prompts + templates + examples + references + README）
+POST   /api/ai/skills/reload          # 清缓存（修改文件后调用）
+GET    /api/ai/skills/audit/recent    # 进程内审计 ring，可按 role/task_id 过滤
+DELETE /api/ai/skills/audit           # 清空审计
+POST   /api/ai/skills/discover        # 仅预览路由结果，不调 LLM
+```
+
+### 三、配置（`backend/.env`）
+
+```bash
+USE_QA_SKILLS=true                       # 开关
+QA_SKILL_FEWSHOT_ENABLED=true            # few-shot
+QA_SKILL_FEWSHOT_MAX_CHARS=1200
+QA_SKILL_PROMPT_TOKEN_BUDGET=8000        # 0 = 不限制
+QA_SKILL_EXTRA_PROMPT_MAX_CHARS=4000     # 业务自定义最大字符（防注入）
+QA_SKILL_LEGACY_FALLBACK_ENABLED=true    # 三层降级最后一档
+QA_SKILL_DISCOVER_ENABLED=false          # 智能路由总开关
+QA_SKILL_OVERLAY=                        # 项目级 overlay；多个用逗号
+QA_SKILL_AB_ENABLED=false                # A/B 双跑
+QA_SKILL_AB_VARIANT_GENERATION=          # variant skill_id
+
+# 角色级覆盖（留空走 catalog 默认）
+QA_SKILL_ANALYSIS=
+QA_SKILL_GENERATION=
+QA_SKILL_REVIEW=
+QA_SKILL_SUPPLEMENT=
+QA_SKILL_DISCOVER=
+```
+
+### 四、本轮自测结果
+
+- **`tests/test_skills_smoke.py`**：100 个断言全过（覆盖 loader / builder / few-shot / audit / discover / ab / 多语言 / 降级 / 注入防御 / overlay）
+- **端到端任务 `e996aa8d`** 重跑日志：
+  - `[skill] analysis skill=requirements-analysis-plus v1.0.0 fewshot=True tokens≈7711`
+  - `[skill] generation skill=testcase-writer-plus v1.0.0 fewshot=True tokens≈9461`
+  - `[skill] review skill=test-case-reviewer-plus v1.0.0 fewshot=True tokens≈21101`（>8000 自动告警）
+  - 用例：60 → 评审补充 46 → 合计 **106 条**，quality_score=68
+- **审计持久化**：`task_details.skill_audit` 已写入 5 条记录（analysis/strategy/generation/review/supplement 全覆盖）
+- **API 全套**：401 / 404 / 200 状态正确；`POST /discover` 文本含 "REST" 时 category=api，library 缺 api-test-pytest 时自动 fallback 到 testcase-writer-plus
+
+### 五、如何升级 / 扩展
+
+- 升级 awesome-qa-skills：`python backend/scripts/sync_qa_skills.py --source ~/.codex/skills/zh/testing-types --skills <id> [--dry-run]`
+- 新增项目级 overlay：在 `backend/app/ai/skills/library/_overlays/<name>/<skill_id>/prompts/xxx.md` 写补丁，再设置 `QA_SKILL_OVERLAY=<name>` 并调用 reload 接口
+- 加 en 版本 skill：复制 zh 目录改 `lang: en` + 翻译内容；调用方自动按需求文本检测语种
+
+---
+
+## 上一轮版本改动总览（2026-04-22 第二轮 · QA Skills 化）
+
+> 主题：**把硬编码 prompt 改造成 SKILL 化**。三个核心 LLM 调用（需求分析 / 用例编写 / 用例评审）改为加载开源 [naodeng/awesome-qa-skills](https://github.com/naodeng/awesome-qa-skills) 中的 plus 版 skill，方法论与输出契约彻底解耦。
+
+### 一、为什么要 SKILL 化
+
+旧方案：**所有 prompt 写死在 `app/ai/prompts.py`**。问题：
+- 角色定位 / 方法论 / 最低覆盖清单 / JSON 输出契约 / 防污染补丁 **混在一起**，谁动一行都怕影响别处。
+- 没法蹭社区沉淀（awesome-qa-skills 一直在演进 plus 版方法论）。
+- 想给某个角色单独换"思考框架"得改源码。
+
+新方案：**Skill = 思考框架；项目内置 = 输出契约 + 防污染**，三段式拼装：
+
+```
+[ Skill 角色定位 + 方法论 + 最低覆盖清单 ]   ← 来自 awesome-qa-skills（可热更新）
+[ Output Contract（JSON Schema、字段约束、禁止行为） ]  ← 项目内置
+[ 业务自定义补充（配置中心 extra_prompt_configs） ]    ← 用户运行时叠加
+```
+
+### 二、改造范围
+
+| 角色 | 旧 prompt | 新 skill | 拼装位置 |
+|---|---|---|---|
+| 需求分析 `analyze_requirements` | `DEFAULT_ANALYSIS_PROMPT` | **`requirements-analysis-plus`** | `build_analysis_messages` |
+| 测试策略 `design_test_strategy` | 同上 + 追加策略要求 | 同上（开 `include_strategy_extension`） | 同上 |
+| 用例编写 `generate_test_cases` | `DEFAULT_GENERATION_PROMPT` | **`testcase-writer-plus`** | `build_generation_messages` |
+| 用例评审 `review_test_cases` | `DEFAULT_REVIEW_PROMPT` | **`test-case-reviewer-plus`** | `build_review_messages` |
+| 评审补全 `_supplement_cases_from_review` | `DEFAULT_SUPPLEMENT_PROMPT` | 复用 `testcase-writer-plus` | `build_supplement_messages` |
+
+### 三、新增模块
+
+```
+backend/app/ai/skills/
+├── __init__.py            # 公开 API
+├── catalog.py             # 业务角色 → skill_id 默认映射
+├── loader.py              # SKILL.md 解析 + prompts/ 加载（带缓存 + frontmatter）
+├── builder.py             # SkillPromptBuilder：skill + Output Contract + 业务自定义 三段拼装
+└── library/               # 自包含 skill 副本（来源见 SOURCE.md）
+    ├── requirements-analysis-plus/{SKILL.md, prompts/...}
+    ├── testcase-writer-plus/{SKILL.md, prompts/...}
+    └── test-case-reviewer-plus/{SKILL.md, prompts/...}
+```
+
+诊断接口（需登录态）：
+- `GET  /api/ai/skills`            列出所有可用 skill + 当前角色映射 + .env 覆盖情况
+- `GET  /api/ai/skills/{skill_id}` 查看单个 skill 的全文（SKILL.md + prompts）
+- `POST /api/ai/skills/reload`     清空缓存，方便热更新 skill 文件
+
+配置中心（前端 → 配置中心）支持两种新条目（向后兼容）：
+- `skill_configs[role].skill_id`：覆盖默认 skill_id
+- `extra_prompt_configs[role].content`：在 skill 之上追加业务约束（**不替换** skill）
+
+### 四、效果（同任务 `e996aa8d`，第三轮跑）
+
+| 指标 | 第二轮（硬编码 prompt） | **第三轮（skill 化）** |
+|---|---|---|
+| 最终用例数 | 89~101 | **111**（70 原始 + **41 评审补充**） |
+| 业务模块数 | 53（碎） | **10**（聚合，按业务影响分组） |
+| 优先级分布 | 主要是"中" | **62% 高 / 35% 中 / 3% 低**（主次分明） |
+| 评审 quality_score | 82（流于形式） | **61（plus 版严格风险评审）** |
+| 评审 issues | 0 | **28** |
+| 评审 missing_scenarios | 0 | **40** |
+| 评审 suggestions | 0 | **14** |
+| 评审 summary | 简单总结 | "高风险覆盖不足，算法冲突、时间口径、状态闭环和跟投幂等缺失" |
+| 污染关键词命中 | 0 | **0** |
+| 字段完整率 | 100% | **100%** |
+
+**核心收益**：plus 版 skill 强调"按业务风险分组、优先指出高风险缺口而不是样式问题"。结果就是评审从"打分式"变成"问题清单 + 缺失场景 + 改进建议"三件套，并且 41 条补充用例真正进入最终交付——**评审-补全闭环**第一次被用满。
+
+### 五、新增配置项
+
+```bash
+# .env
+USE_QA_SKILLS=true                              # false 可一键回退到旧硬编码 prompt
+QA_SKILLS_DIR=""                                # 留空使用 backend/app/ai/skills/library
+QA_SKILL_ANALYSIS=""                            # 默认: requirements-analysis-plus
+QA_SKILL_GENERATION=""                          # 默认: testcase-writer-plus
+QA_SKILL_REVIEW=""                              # 默认: test-case-reviewer-plus
+QA_SKILL_SUPPLEMENT=""                          # 默认: testcase-writer-plus
+```
+
+### 六、如何升级 / 替换 skill
+
+```bash
+# 同步上游 awesome-qa-skills
+git clone https://github.com/naodeng/awesome-qa-skills.git /tmp/awesome-qa-skills
+SRC=/tmp/awesome-qa-skills/skills/zh/testing-types
+DEST=backend/app/ai/skills/library
+for s in requirements-analysis-plus testcase-writer-plus test-case-reviewer-plus; do
+  cp -f "$SRC/$s/SKILL.md"   "$DEST/$s/SKILL.md"
+  cp -Rf "$SRC/$s/prompts"   "$DEST/$s/prompts"
+done
+
+# 热更新（不重启进程）
+curl -X POST http://127.0.0.1:8001/api/ai/skills/reload \
+  -H "Authorization: Bearer <token>"
+```
+
+更进一步：把任意 awesome-qa-skills 中的 skill（例如 `api-test-pytest`、`security-testing`）放进 `library/` 后，配置中心里给某个角色挂上对应 skill_id 即可生效。
+
+---
+
+## 上上轮版本改动总览（2026-04-22 第一轮）
 
 > 主题：**RAG 知识库重构 + AI 用例生成质量大幅提升**。一次性解决"用例数量太少 / 模块名乱 / 跨业务领域污染"三大顽疾。
 
