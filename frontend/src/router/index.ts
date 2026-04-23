@@ -54,6 +54,11 @@ const routes: Array<RouteRecordRaw> = [
         path: 'config-center/notifications',
         name: 'ConfigCenterNotifications',
         component: () => import('../views/ConfigCenter.vue')
+      },
+      {
+        path: 'config-center/skills',
+        name: 'ConfigCenterSkills',
+        component: () => import('../views/SkillsCenter.vue')
       }
     ]
   },
