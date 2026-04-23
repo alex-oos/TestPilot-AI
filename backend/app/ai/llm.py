@@ -22,6 +22,19 @@ def _is_reasoning_model(model_name: str) -> bool:
     )
 
 
+import contextvars
+
+# 最近一次 chat 调用的 usage（contextvar，跨 await 安全）
+last_usage_ctx: contextvars.ContextVar[Optional[Dict[str, int]]] = contextvars.ContextVar(
+    "llm_last_usage", default=None,
+)
+
+
+def get_last_usage() -> Optional[Dict[str, int]]:
+    """读取当前 task 上下文最近一次 LLM 调用的真实 token usage。"""
+    return last_usage_ctx.get()
+
+
 class UniversalLLMClient:
     """
     Universal Client for Large Language Models using OpenAI SDK.
@@ -94,6 +107,20 @@ class UniversalLLMClient:
 
             # Send request
             response = await client.chat.completions.create(**params)
+
+            # 记录真实 usage（供 audit 回填）
+            try:
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    last_usage_ctx.set({
+                        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                    })
+                else:
+                    last_usage_ctx.set(None)
+            except Exception:
+                last_usage_ctx.set(None)
 
             # Extract content from response
             if response.choices and len(response.choices) > 0:
