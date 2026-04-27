@@ -1,7 +1,13 @@
 """QA Skills 管理 / 审计 / 智能路由相关 API。"""
+import json
+import sqlite3
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.ai import quality_gate
+from app.ai import llm_cache, llm_concurrency, llm_pricing
 from app.ai.skills import (
     DEFAULT_SKILL_FOR_ROLE,
     audit as skill_audit,
@@ -189,3 +195,139 @@ async def discover_for_text(
     route = skill_discover.route_combined(payload.text or "", available_skills=available)
     route = skill_discover.filter_to_available(route, available)
     return success({"route": route, "available": available}, request.state.tid)
+
+
+# ---------------- 用例质量门禁（Quality Gate） ----------------
+
+class QualityScoreRequest(BaseModel):
+    cases: list[dict]
+    low_threshold: int | None = None
+
+
+@router.post("/ai/quality/score")
+async def quality_score(
+    req: QualityScoreRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """对一批用例做离线质量评分。"""
+    threshold = int(req.low_threshold or settings.QUALITY_GATE_LOW_THRESHOLD)
+    audit = quality_gate.score_cases(req.cases or [])
+    payload = quality_gate.audit_to_payload(audit, low_threshold=threshold)
+    return success(payload, request.state.tid)
+
+
+def _resolve_app_db_path() -> Path:
+    base = Path(__file__).resolve().parents[3]  # backend/
+    db = settings.SQLITE_DB_PATH
+    if db.startswith("./"):
+        db = db[2:]
+    return (base / db).resolve()
+
+
+def _load_task_generation_cases(task_id: str) -> list[dict]:
+    """从 task_details.data_json 中读取 generation 阶段产出的 cases。"""
+    db_path = _resolve_app_db_path()
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.execute(
+                "SELECT data_json FROM task_details WHERE task_id=? AND phase_key=?",
+                (task_id, "generation"),
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    if not row or not row[0]:
+        return []
+    try:
+        data = json.loads(row[0])
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        for k in ("cases", "test_cases", "items"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+    if isinstance(data, list):
+        return data
+    return []
+
+
+@router.get("/ai/quality/task/{task_id}")
+async def quality_task(
+    task_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """读取指定 task 的 generation 用例并实时打分。"""
+    cases = _load_task_generation_cases(task_id)
+    if not cases:
+        raise HTTPException(status_code=404, detail=f"task {task_id} 没有可读取的 generation 用例")
+    audit = quality_gate.score_cases(cases)
+    payload = quality_gate.audit_to_payload(audit, low_threshold=settings.QUALITY_GATE_LOW_THRESHOLD)
+    payload["task_id"] = task_id
+    return success(payload, request.state.tid)
+
+
+# ---------------- LLM 治理观测 ----------------
+
+@router.get("/ai/llm/cache/stats")
+async def llm_cache_stats(request: Request, current_user: dict = Depends(get_current_user)):
+    return success(llm_cache.stats(), request.state.tid)
+
+
+@router.post("/ai/llm/cache/purge")
+async def llm_cache_purge(request: Request, current_user: dict = Depends(get_current_user)):
+    n_expired = llm_cache.purge_expired()
+    return success({"purged_expired": n_expired, **llm_cache.stats()}, request.state.tid)
+
+
+@router.delete("/ai/llm/cache")
+async def llm_cache_clear(request: Request, current_user: dict = Depends(get_current_user)):
+    n = llm_cache.clear_all()
+    return success({"cleared": n, **llm_cache.stats()}, request.state.tid)
+
+
+@router.get("/ai/llm/concurrency/stats")
+async def llm_concurrency_stats(request: Request, current_user: dict = Depends(get_current_user)):
+    return success(llm_concurrency.stats(), request.state.tid)
+
+
+@router.get("/ai/llm/pricing")
+async def llm_pricing_endpoint(request: Request, current_user: dict = Depends(get_current_user)):
+    return success(llm_pricing.list_pricing(), request.state.tid)
+
+
+@router.get("/ai/llm/cost/recent")
+async def llm_cost_recent(
+    request: Request,
+    days: int = Query(7, ge=1, le=90),
+    current_user: dict = Depends(get_current_user),
+):
+    return success(skill_audit.get_cost_stats(days=days), request.state.tid)
+
+
+@router.get("/ai/llm/task/{task_id}/calls")
+async def llm_task_calls(
+    task_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    return success(skill_audit.get_task_call_stats(task_id), request.state.tid)
+
+
+@router.post("/ai/skills/audit/purge")
+async def audit_purge(
+    request: Request,
+    days: int | None = Query(None, ge=1, le=365),
+    current_user: dict = Depends(get_current_user),
+):
+    """按保留天数清理审计记录（默认使用 AUDIT_RETENTION_DAYS）。"""
+    retention = int(days or settings.AUDIT_RETENTION_DAYS)
+    n = skill_audit.purge_old(retention)
+    return success({"purged": n, "retention_days": retention}, request.state.tid)

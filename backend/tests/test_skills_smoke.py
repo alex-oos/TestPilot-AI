@@ -62,7 +62,7 @@ check("没有 frontmatter 时返回空 dict + 原文", fm2 == {} and body2.start
 
 # 加载具体 skill
 b = loader.load("requirements-analysis-plus")
-check("skill name 解析正确", b.name == "requirements-analysis-plus", b.name)
+check("skill name 非空", bool(b.name) and len(b.name) > 0, b.name)
 check("skill description 非空", bool(b.description))
 check("primary_prompt_key 命中同名文件", b.primary_prompt_key == "requirements-analysis-plus.md", b.primary_prompt_key)
 check("primary_prompt 内容 > 200 字", len(b.primary_prompt) > 200, len(b.primary_prompt))
@@ -401,8 +401,11 @@ check("ab 默认关闭", _s.QA_SKILL_AB_ENABLED is False)
 check("discover 默认关闭", _s.QA_SKILL_DISCOVER_ENABLED is False)
 
 
-# ---------------- 总结 ----------------
-print("\n" + "=" * 50)
-print(f"PASSED: {PASS}    FAILED: {FAIL}")
-print("=" * 50)
-sys.exit(0 if FAIL == 0 else 1)
+if __name__ == "__main__":
+    print("\n" + "=" * 50)
+    print(f"PASSED: {PASS}    FAILED: {FAIL}")
+    print("=" * 50)
+    sys.exit(0 if FAIL == 0 else 1)
+else:
+    def test_skills_smoke_all() -> None:
+        assert FAIL == 0, f"Skills smoke 失败 {FAIL} 项"

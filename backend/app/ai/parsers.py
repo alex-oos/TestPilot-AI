@@ -156,11 +156,31 @@ def _normalize_review_payload(review: Any) -> Dict[str, Any]:
         except Exception:
             reviewed_cases = []
 
+    sub_scores_raw = review.get("sub_scores") or {}
+    sub_scores: Dict[str, int] = {}
+    if isinstance(sub_scores_raw, dict):
+        for k in ("coverage", "completeness", "executability", "boundary", "data_accuracy", "priority_balance"):
+            try:
+                sub_scores[k] = max(0, min(100, int(float(sub_scores_raw.get(k, 0)))))
+            except Exception:
+                sub_scores[k] = 0
+
+    type_distribution_raw = review.get("type_distribution") or {}
+    type_distribution: Dict[str, int] = {}
+    if isinstance(type_distribution_raw, dict):
+        for k, v in type_distribution_raw.items():
+            try:
+                type_distribution[str(k)] = int(v)
+            except Exception:
+                continue
+
     normalized_review = {
         "issues": issues,
         "suggestions": suggestions,
         "missing_scenarios": missing_scenarios,
         "quality_score": quality_score,
+        "sub_scores": sub_scores,
+        "type_distribution": type_distribution,
         "summary": summary,
     }
     if reviewed_cases:
@@ -267,6 +287,8 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
                 "steps": steps,
                 "expected_result": str(raw_expected or ""),
                 "priority": str(item.get("priority") or "中"),
+                "case_type": str(item.get("case_type") or "").strip(),
+                "test_data": str(item.get("test_data") or "").strip(),
             }
         )
 
@@ -278,17 +300,52 @@ def _normalize_cases(cases: Any) -> List[Dict[str, Any]]:
 def _count_blank_case_fields(cases: List[Dict[str, Any]]) -> Dict[str, int]:
     blank_steps = sum(1 for c in cases if not str(c.get("steps") or "").strip())
     blank_expected = sum(1 for c in cases if not str(c.get("expected_result") or "").strip())
+    short_steps = sum(1 for c in cases if len(str(c.get("steps") or "").strip()) < 60)
     return {
         "total": len(cases),
         "blank_steps": blank_steps,
         "blank_expected": blank_expected,
+        "short_steps": short_steps,
     }
 
 
 def _needs_case_repair(cases: List[Dict[str, Any]]) -> bool:
     stats = _count_blank_case_fields(cases)
     total = max(1, stats["total"])
-    return (stats["blank_steps"] / total) > 0.4 or (stats["blank_expected"] / total) > 0.4
+    if (stats["blank_steps"] / total) > 0.4:
+        return True
+    if (stats["blank_expected"] / total) > 0.4:
+        return True
+    # 步骤过粗：>30% 用例 steps 过短
+    if (stats["short_steps"] / total) > 0.3:
+        return True
+    return False
+
+
+_TYPE_INFER_RULES = (
+    # 顺序：从特定到一般。title 命中优先于 expected/steps。
+    ("并发/时序", ("并发", "竞态", "重复提交", "幂等", "时序")),
+    ("性能/容量", ("性能", "qps", "tps", "压测", "稳定性")),
+    ("权限/角色", ("权限", "角色", "未登录", "越权", "鉴权")),
+    ("兼容/UI",  ("兼容", "浏览器", "分辨率", "样式", "国际化")),
+    ("数据校验", ("校验", "格式", "正则", "非法字符")),
+    ("边界值",   ("最大", "最小", "上限", "下限", "极值", "边界")),
+    ("功能-反向", ("失败", "错误", "拒绝", "无效", "不存在", "缺少")),
+    ("异常处理", ("超时", "断网", "中断", "宕机", "崩溃")),  # 不含'异常'，避免默认 expected 误命中
+)
+
+
+def _infer_case_type(title: str, expected: str, steps: str = "") -> str:
+    title_l = (title or "").lower()
+    full_l = f"{title} {expected} {steps}".lower()
+    # title 命中优先（避免默认填充文本污染）
+    for ct, kws in _TYPE_INFER_RULES:
+        if any(kw.lower() in title_l for kw in kws):
+            return ct
+    for ct, kws in _TYPE_INFER_RULES:
+        if any(kw.lower() in full_l for kw in kws):
+            return ct
+    return "功能-正向"
 
 
 def _fill_case_blanks(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -296,8 +353,24 @@ def _fill_case_blanks(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for case in cases:
         item = dict(case)
         if not str(item.get("steps") or "").strip():
-            item["steps"] = "1. 执行该功能对应的核心操作。\n2. 校验系统返回与页面表现是否符合需求。"
+            item["steps"] = (
+                "1. [操作] 进入对应功能页面/接口；[数据] 使用前置条件中的账号与数据；[校验] 页面/接口正常加载。\n"
+                "2. [操作] 执行该用例对应的核心动作；[数据] 输入主要业务字段；[校验] 系统返回符合预期。\n"
+                "3. [操作] 检查关联数据/状态；[数据] 关注影响范围内的字段；[校验] 状态机/数据库变化符合需求。"
+            )
         if not str(item.get("expected_result") or "").strip():
-            item["expected_result"] = "系统行为符合需求与测试策略定义，无异常报错。"
+            item["expected_result"] = (
+                "系统返回成功状态，对应业务字段更新到数据库；前端 UI 显示对应结果文案，不出现异常报错与白屏。"
+            )
+        if len(str(item.get("precondition") or "").strip()) < 5:
+            item["precondition"] = "测试账号已登录且具有对应业务权限；前置数据按需求文档准备完毕。"
+        if not str(item.get("case_type") or "").strip():
+            item["case_type"] = _infer_case_type(
+                str(item.get("title") or ""),
+                str(item.get("expected_result") or ""),
+                str(item.get("steps") or ""),
+            )
+        if not str(item.get("test_data") or "").strip():
+            item["test_data"] = "无"
         patched.append(item)
     return patched

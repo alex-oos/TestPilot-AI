@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from loguru import logger
 
-from app.ai.llm import get_last_usage, llm_client
+from app.ai.llm import get_last_call_meta, get_last_usage, llm_client
 from app.ai.parsers import (
     _fill_case_blanks,
     _needs_case_repair,
@@ -35,6 +35,7 @@ from app.ai.skills import (
 from app.ai.skills import ab as skill_ab
 from app.ai.skills import discover as skill_discover
 from app.ai.skills.loader import get_skill_loader
+from app.ai import quality_gate
 from app.core.config import settings
 
 
@@ -86,17 +87,135 @@ def _audit(role: str, meta: dict, *, extra_prompt_present: bool = False, extra: 
 
 
 def _backfill_actual_tokens(role: str) -> None:
-    """LLM 调用后调用：把真实 usage 写回最近一条审计记录。"""
+    """LLM 调用后调用：把真实 usage、成本、cache/retries/error_code 写回最近一条审计记录。"""
     try:
         usage = get_last_usage()
-        if not usage:
+        meta = get_last_call_meta() or {}
+        if not usage and not meta:
             return
         skill_audit.update_actual_tokens(
             {"role": role, "task_id": _current_task_id()},
-            usage,
+            usage or {},
+            meta=meta,
         )
     except Exception as exc:  # noqa
         logger.debug("[skill] 回填 actual_tokens 失败: {}", exc)
+
+
+# ---------------- quality gate ----------------
+
+async def _apply_quality_gate(
+    cases: List[Dict[str, Any]],
+    *,
+    design_result: str,
+    role_cfg: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """生成阶段质量门禁：打分 + 审计 + 低分用例 LLM 自动细化重生成。"""
+    if not cases:
+        return cases
+    audit = quality_gate.score_cases(cases)
+    threshold = int(getattr(settings, "QUALITY_GATE_LOW_THRESHOLD", 60))
+    low_ids = quality_gate.find_low_quality_ids(audit, threshold=threshold)
+
+    # 审计写一条
+    try:
+        skill_audit.from_meta(
+            role="quality_gate",
+            meta={
+                "skill_id": "quality_gate", "version": "1.0.0", "lang": "zh",
+                "content_hash": "", "overlays_applied": [], "used_fewshot": False,
+                "detected_lang": "", "prompt_tokens_est": 0, "over_budget": False,
+            },
+            task_id=_current_task_id(),
+            extra={
+                "overall_score": audit.overall_score,
+                "average_case_score": audit.average_case_score,
+                "sub_scores": audit.sub_scores,
+                "low_count": len(low_ids),
+                "missing_types": audit.missing_types,
+                "weak_areas": audit.weak_areas,
+                "threshold": threshold,
+            },
+        )
+    except Exception as exc:  # noqa
+        logger.debug("[quality-gate] 审计写入失败: {}", exc)
+
+    logger.info(
+        "[quality-gate] total={} overall={} avg={:.1f} low={} weak={} missing={}",
+        audit.total, audit.overall_score, audit.average_case_score,
+        len(low_ids), audit.weak_areas, audit.missing_types,
+    )
+
+    if not bool(getattr(settings, "QUALITY_GATE_REFINE_ENABLED", True)):
+        return cases
+    if not low_ids:
+        return cases
+
+    refine_max = int(getattr(settings, "QUALITY_GATE_REFINE_MAX", 30))
+    target_ids = low_ids[:refine_max]
+    targets = [c for c in cases if c.get("id") in target_ids]
+    target_issues = {cs.case_id: cs.issues for cs in audit.cases if cs.case_id in target_ids}
+    if not targets:
+        return cases
+
+    refine_user = (
+        "下列测试用例被质量门禁判定为不合格，需要你**逐条**重写为高质量版本。\n"
+        "重写时严格遵守输出契约：title ≥12 字符并以'验证'开头；steps ≥3 步、≥80 字符且必须采用 [操作]/[数据]/[校验] 三段式；"
+        "expected_result ≥40 字符且包含可观测断言；test_data 必须给出字段=值；case_type 必须从 9 类中选；priority 合理分布。\n\n"
+        f"【测试策略上下文】\n{design_result[:3000]}\n\n"
+        f"【需要重写的用例（共 {len(targets)} 条）】\n{json.dumps(targets, ensure_ascii=False, indent=2)}\n\n"
+        f"【每条用例的具体扣分原因】\n{json.dumps(target_issues, ensure_ascii=False, indent=2)}\n\n"
+        "请直接返回 JSON 对象 {\"cases\": [...]}，cases 数组中**每条**都必须保留与原用例相同的 id 字段，"
+        "其它字段按要求改写。除 JSON 外不要任何文字。"
+    )
+    refine_messages = [
+        {"role": "system", "content": (
+            "你是资深 QA 用例重写专家。任务：把不合格的用例改写为高质量版本，"
+            "保留 id 不变，按字段约束逐条改写。只返回 JSON 对象。"
+        )},
+        {"role": "user", "content": refine_user},
+    ]
+    try:
+        refined_raw = await llm_client.chat(
+            messages=refine_messages,
+            temperature=float(role_cfg.get("temperature", 0.1)),
+            response_format={"type": "json_object"},
+            model=role_cfg["model"],
+            api_key=role_cfg.get("api_key"),
+            base_url=role_cfg.get("base_url"),
+            max_tokens=_bumped_max_tokens(role_cfg, GENERATION_MIN_TOKENS),
+            top_p=role_cfg.get("top_p"),
+        )
+        if not isinstance(refined_raw, str) or refined_raw.lower().startswith("error:"):
+            logger.warning("[quality-gate] 细化重写失败，跳过")
+            return cases
+        _backfill_actual_tokens("quality_gate")
+        refined_cases = _parse_cases_payload(refined_raw)
+    except Exception as exc:
+        logger.warning("[quality-gate] 细化重写解析失败: {}", exc)
+        return cases
+
+    refined_cases = _fill_case_blanks(refined_cases)
+    by_id = {c.get("id"): c for c in refined_cases if c.get("id") in target_ids}
+    if not by_id:
+        return cases
+
+    # 用重写结果覆盖原用例
+    merged: List[Dict[str, Any]] = []
+    for c in cases:
+        cid = c.get("id")
+        if cid in by_id:
+            new_case = dict(c)
+            new_case.update(by_id[cid])
+            new_case["id"] = cid
+            merged.append(new_case)
+        else:
+            merged.append(c)
+    logger.success(
+        "[quality-gate] 已细化重写 {}/{} 条低分用例",
+        len(by_id), len(target_ids),
+    )
+    return merged
 
 
 # ---------------- discover routing ----------------
@@ -365,6 +484,12 @@ async def generate_test_cases(
     if _needs_case_repair(cases):
         logger.warning("Cases still contain blanks after refinement, apply safe fallback text.")
         cases = _fill_case_blanks(cases)
+
+    # ---- 用例质量门禁：评分 + 低分用例自动重生成 ----
+    try:
+        cases = await _apply_quality_gate(cases, design_result=design_result, role_cfg=role_cfg)
+    except Exception as qg_exc:  # noqa
+        logger.warning("[quality-gate] 异常，跳过细化: {}", qg_exc)
 
     # ---- A/B 实验：可选并行跑 variant skill，仅记录对比指标 ----
     if (

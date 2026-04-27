@@ -25,7 +25,7 @@ from loguru import logger
 @dataclass
 class SkillAuditRecord:
     ts: float
-    role: str                          # analysis / generation / review / supplement / discover / strategy
+    role: str                          # analysis / generation / review / supplement / discover / strategy / quality_gate
     task_id: str | None = None
     skill_id: str = ""
     skill_version: str = ""
@@ -40,6 +40,12 @@ class SkillAuditRecord:
     over_budget: bool = False
     extra_prompt_present: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    # ---- LLM 治理新增字段 ----
+    cost_usd: float = 0.0
+    model: str = ""
+    cache_hit: bool = False
+    retries: int = 0
+    error_code: str = ""
 
 
 _RING: deque[SkillAuditRecord] = deque(maxlen=500)
@@ -72,6 +78,15 @@ async def init_audit_storage() -> None:
         _DB_INIT_DONE = False
 
 
+_NEW_COLUMNS = (
+    ("cost_usd", "REAL DEFAULT 0"),
+    ("model", "TEXT"),
+    ("cache_hit", "INTEGER DEFAULT 0"),
+    ("retries", "INTEGER DEFAULT 0"),
+    ("error_code", "TEXT"),
+)
+
+
 def _create_table_sync(path: Path) -> None:
     conn = sqlite3.connect(str(path))
     try:
@@ -101,6 +116,14 @@ def _create_table_sync(path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_task ON skill_audits(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON skill_audits(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_role ON skill_audits(role)")
+        # 增量列（向后兼容）
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(skill_audits)")}
+        for col, ddl in _NEW_COLUMNS:
+            if col not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE skill_audits ADD COLUMN {col} {ddl}")
+                except Exception:  # noqa
+                    pass
         conn.commit()
     finally:
         conn.close()
@@ -124,8 +147,9 @@ def _persist_sync(rec: SkillAuditRecord) -> None:
                 (ts, role, task_id, skill_id, skill_version, skill_lang, content_hash,
                  overlays_applied, used_fewshot, detected_lang, prompt_tokens_est,
                  prompt_tokens_actual, completion_tokens_actual, over_budget,
-                 extra_prompt_present, extra_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 extra_prompt_present, extra_json,
+                 cost_usd, model, cache_hit, retries, error_code)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     rec.ts, rec.role, rec.task_id, rec.skill_id, rec.skill_version,
@@ -137,6 +161,9 @@ def _persist_sync(rec: SkillAuditRecord) -> None:
                     1 if rec.over_budget else 0,
                     1 if rec.extra_prompt_present else 0,
                     json.dumps(rec.extra, ensure_ascii=False),
+                    float(rec.cost_usd or 0.0), rec.model or "",
+                    1 if rec.cache_hit else 0,
+                    int(rec.retries or 0), rec.error_code or "",
                 ),
             )
             conn.commit()
@@ -275,18 +302,33 @@ def get_token_usage_stats() -> dict[str, Any]:
     return {"persisted": True, "by_role": by_role, "by_skill": by_skill}
 
 
-def update_actual_tokens(record_id_filter: dict[str, Any], usage: dict[str, int]) -> None:
-    """根据 ts 范围 + role + task_id 把最近一条审计补上真实 token 用量。"""
+def update_actual_tokens(
+    record_id_filter: dict[str, Any],
+    usage: dict[str, int],
+    *,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """根据 ts 范围 + role + task_id 把最近一条审计补上真实 token 用量、成本、调用元信息。"""
     if not _DB_INIT_DONE or _DB_PATH is None:
-        return
-    if not usage:
         return
     role = record_id_filter.get("role")
     task_id = record_id_filter.get("task_id")
     if not role:
         return
-    pt = int(usage.get("prompt_tokens", 0) or 0)
-    ct = int(usage.get("completion_tokens", 0) or 0)
+    pt = int((usage or {}).get("prompt_tokens", 0) or 0)
+    ct = int((usage or {}).get("completion_tokens", 0) or 0)
+    meta = meta or {}
+    model = str(meta.get("model") or "")
+    cache_hit = 1 if meta.get("cache_hit") else 0
+    retries = int(meta.get("retries") or 0)
+    error_code = str(meta.get("error_code") or "")
+    cost_usd = 0.0
+    if model and (pt or ct):
+        try:
+            from app.ai.llm_pricing import calc_cost_usd
+            cost_usd = float(calc_cost_usd(model=model, prompt_tokens=pt, completion_tokens=ct)["total_cost"])
+        except Exception:  # noqa
+            cost_usd = 0.0
     try:
         conn = sqlite3.connect(str(_DB_PATH))
         try:
@@ -297,18 +339,139 @@ def update_actual_tokens(record_id_filter: dict[str, Any], usage: dict[str, int]
             ).fetchone()
             if row:
                 conn.execute(
-                    "UPDATE skill_audits SET prompt_tokens_actual=?, completion_tokens_actual=? WHERE id=?",
-                    (pt, ct, row[0]),
+                    """
+                    UPDATE skill_audits
+                       SET prompt_tokens_actual=?, completion_tokens_actual=?,
+                           model=COALESCE(NULLIF(?, ''), model),
+                           cache_hit=?, retries=?, error_code=?,
+                           cost_usd=?
+                     WHERE id=?
+                    """,
+                    (pt, ct, model, cache_hit, retries, error_code, cost_usd, row[0]),
                 )
                 conn.commit()
         finally:
             conn.close()
     except Exception as exc:
         logger.debug("[skill] audit 回填 token 失败: {}", exc)
-    # 同步更新 ring 里最近一条
     with _LOCK:
         for rec in reversed(_RING):
             if rec.role == role and (not task_id or rec.task_id == task_id):
                 rec.prompt_tokens_actual = pt
                 rec.completion_tokens_actual = ct
+                rec.cost_usd = cost_usd
+                if model:
+                    rec.model = model
+                rec.cache_hit = bool(cache_hit)
+                rec.retries = retries
+                rec.error_code = error_code
                 break
+
+
+def purge_old(retention_days: int) -> int:
+    """按保留天数删除老审计记录。返回删除条数。"""
+    if not _DB_INIT_DONE or _DB_PATH is None:
+        return 0
+    if retention_days <= 0:
+        return 0
+    cutoff = time.time() - retention_days * 86400
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        try:
+            cur = conn.execute("DELETE FROM skill_audits WHERE ts < ?", (cutoff,))
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("[skill] purge_old 失败: {}", exc)
+        return 0
+
+
+def get_cost_stats(*, days: int = 7) -> dict[str, Any]:
+    """按 model / role 聚合成本（默认近 7 天）。"""
+    if not _DB_INIT_DONE or _DB_PATH is None:
+        return {"persisted": False, "by_model": [], "by_role": [], "total": {}}
+    cutoff = time.time() - max(1, days) * 86400
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        try:
+            by_model = [dict(r) for r in conn.execute(
+                """
+                SELECT COALESCE(NULLIF(model,''), '(unknown)') AS model,
+                       COUNT(*) AS calls,
+                       SUM(prompt_tokens_actual) AS prompt_tokens,
+                       SUM(completion_tokens_actual) AS completion_tokens,
+                       SUM(cost_usd) AS cost_usd,
+                       SUM(cache_hit) AS cache_hits,
+                       SUM(retries) AS retries
+                FROM skill_audits WHERE ts >= ? GROUP BY model ORDER BY cost_usd DESC
+                """, (cutoff,)
+            ).fetchall()]
+            by_role = [dict(r) for r in conn.execute(
+                """
+                SELECT role, COUNT(*) AS calls,
+                       SUM(prompt_tokens_actual) AS prompt_tokens,
+                       SUM(completion_tokens_actual) AS completion_tokens,
+                       SUM(cost_usd) AS cost_usd
+                FROM skill_audits WHERE ts >= ? GROUP BY role ORDER BY cost_usd DESC
+                """, (cutoff,)
+            ).fetchall()]
+            tot = conn.execute(
+                """
+                SELECT COUNT(*) AS calls,
+                       SUM(prompt_tokens_actual) AS prompt_tokens,
+                       SUM(completion_tokens_actual) AS completion_tokens,
+                       SUM(cost_usd) AS cost_usd,
+                       SUM(cache_hit) AS cache_hits,
+                       SUM(retries) AS retries
+                FROM skill_audits WHERE ts >= ?
+                """, (cutoff,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa
+        logger.debug("[skill] get_cost_stats 失败: {}", exc)
+        return {"persisted": True, "by_model": [], "by_role": [], "total": {}}
+    return {
+        "persisted": True,
+        "days": days,
+        "total": dict(tot) if tot else {},
+        "by_model": by_model,
+        "by_role": by_role,
+    }
+
+
+def get_task_call_stats(task_id: str) -> dict[str, Any]:
+    """单 task 维度的 LLM 调用 / 成本聚合，给前端 'AI 调用/成本' tab 用。"""
+    if not _DB_INIT_DONE or _DB_PATH is None or not task_id:
+        return {"persisted": False, "items": [], "total": {}}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = [dict(r) for r in conn.execute(
+                """
+                SELECT id, ts, role, skill_id, model, prompt_tokens_actual, completion_tokens_actual,
+                       cost_usd, cache_hit, retries, error_code
+                FROM skill_audits WHERE task_id=? ORDER BY id ASC
+                """, (task_id,)
+            ).fetchall()]
+            tot = conn.execute(
+                """
+                SELECT COUNT(*) AS calls,
+                       SUM(prompt_tokens_actual) AS prompt_tokens,
+                       SUM(completion_tokens_actual) AS completion_tokens,
+                       SUM(cost_usd) AS cost_usd,
+                       SUM(cache_hit) AS cache_hits,
+                       SUM(retries) AS retries
+                FROM skill_audits WHERE task_id=?
+                """, (task_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("[skill] get_task_call_stats 失败: {}", exc)
+        return {"persisted": True, "items": [], "total": {}}
+    return {"persisted": True, "task_id": task_id, "total": dict(tot) if tot else {}, "items": rows}

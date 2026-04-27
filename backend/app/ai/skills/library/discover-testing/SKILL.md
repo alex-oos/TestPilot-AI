@@ -1,5 +1,5 @@
 ---
-name: discover-testing
+name: 测试技能路由（智能 Discover）
 description: 当你需要快速判断一个需求应该使用哪个测试技能时，使用这个技能进行路由和选择。
 version: 1.0.0
 lang: zh

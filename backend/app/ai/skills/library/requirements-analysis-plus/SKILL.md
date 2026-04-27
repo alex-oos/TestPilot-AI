@@ -1,5 +1,5 @@
 ---
-name: requirements-analysis-plus
+name: 需求分析增强版
 description: 解析 Word/HTML/JSON/Markdown/Excel 需求文档，并输出结构化需求分析结论。
 version: 1.0.0
 lang: zh
