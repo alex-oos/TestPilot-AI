@@ -149,6 +149,7 @@ class SkillLoader:
     def __init__(self, library_dir: Path) -> None:
         self.library_dir = library_dir
         self._cache: dict[str, SkillBundle] = {}
+        self._mtime: dict[str, float] = {}
         self._lock = threading.Lock()
 
     # ---------- 公共 API ----------
@@ -169,6 +170,18 @@ class SkillLoader:
         return result
 
     def load(self, skill_id: str) -> SkillBundle:
+        # auto-reload：若 SKILL.md / prompts 目录 mtime 变化则失效缓存
+        if bool(getattr(settings, "SKILL_AUTO_RELOAD", False)):
+            try:
+                cur = self._signature_mtime(skill_id)
+                last = self._mtime.get(skill_id, 0.0)
+                if cur > last and last > 0:
+                    logger.info("[skill] {} 文件变化，自动重载 ({:.0f} → {:.0f})", skill_id, last, cur)
+                    with self._lock:
+                        self._cache.pop(skill_id, None)
+            except Exception:  # noqa
+                pass
+
         with self._lock:
             cached = self._cache.get(skill_id)
             if cached is not None:
@@ -178,11 +191,30 @@ class SkillLoader:
 
         with self._lock:
             self._cache[skill_id] = bundle
+            try:
+                self._mtime[skill_id] = self._signature_mtime(skill_id)
+            except Exception:  # noqa
+                pass
         return bundle
 
     def reset_cache(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._mtime.clear()
+
+    def _signature_mtime(self, skill_id: str) -> float:
+        """采用 SKILL.md 与 prompts 目录最大 mtime 作为 skill 整体签名。"""
+        sp = self.library_dir / skill_id
+        ms = [0.0]
+        for cand in (sp / "SKILL.md", sp / "README.md", sp / "prompts"):
+            if cand.exists():
+                if cand.is_file():
+                    ms.append(cand.stat().st_mtime)
+                else:
+                    for f in cand.rglob("*"):
+                        if f.is_file():
+                            ms.append(f.stat().st_mtime)
+        return max(ms)
 
     def get_overlay_dirs(self) -> list[Path]:
         """返回当前激活的 overlay 目录列表（按优先级）。"""

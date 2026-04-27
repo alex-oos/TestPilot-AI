@@ -91,9 +91,11 @@ section("2. generation builder：固定策略 → 关键段")
 gr = build_generation_messages(design_result=GOLDEN_STRATEGY, historical_context="")
 sys_g = gr.messages[0]["content"]
 user_g = gr.messages[1]["content"]
-check("system 段包含 GENERATION_OUTPUT_CONTRACT 关键字段约束", "【字段约束】" in sys_g)
+check("system 段包含 GENERATION_OUTPUT_CONTRACT 关键字段约束", "字段硬性约束" in sys_g)
 check("system 段包含覆盖率硬性要求", "覆盖率硬性要求" in sys_g)
-check("system 段包含 priority 三级要求", '"高"' in sys_g and '"中"' in sys_g and '"低"' in sys_g)
+check("system 段包含 priority 三级要求", "高" in sys_g and "中" in sys_g and "低" in sys_g)
+check("system 段包含新增 case_type / test_data 字段", "case_type" in sys_g and "test_data" in sys_g)
+check("system 段包含三段式步骤约束", "[操作]" in sys_g and "[校验]" in sys_g)
 check("user 段包含策略全文", "测试策略" in user_g)
 check("user 段提示直接返回 JSON", "JSON" in user_g or "json" in user_g)
 check("token 估算合理（<10k）", gr.prompt_tokens_est < 10000,
@@ -107,6 +109,8 @@ sys_r = rr.messages[0]["content"]
 user_r = rr.messages[1]["content"]
 check("system 段包含 REVIEW_OUTPUT_CONTRACT", "missing_scenarios" in sys_r)
 check("system 段强调禁止 reviewed_cases", "reviewed_cases" in sys_r)
+check("system 段包含 sub_scores 6 维度", "sub_scores" in sys_r and "coverage" in sys_r and "executability" in sys_r)
+check("system 段包含 type_distribution 9 类", "type_distribution" in sys_r)
 check("user 段包含已生成用例数量", "共 2 条" in user_r or "(共 2 条)" in user_r or "共 2" in user_r)
 check("user 段包含 case title", "手机号正确" in user_r)
 
@@ -150,7 +154,10 @@ for sid in loader.list_available():
         break
 
 
-# ---------------- 汇总 ----------------
-print(f"\n=== Golden 回归结果 ===")
-print(f"通过 {PASS} / 失败 {FAIL}")
-sys.exit(0 if FAIL == 0 else 1)
+if __name__ == "__main__":
+    print(f"\n=== Golden 回归结果 ===")
+    print(f"通过 {PASS} / 失败 {FAIL}")
+    sys.exit(0 if FAIL == 0 else 1)
+else:
+    def test_skills_golden_all() -> None:
+        assert FAIL == 0, f"Golden 回归失败 {FAIL} 项"

@@ -1,5 +1,5 @@
 ---
-name: test-case-reviewer-plus
+name: 测试用例评审增强版
 description: 基于需求、策略和测试用例文档生成测试用例评审结果。
 version: 1.0.0
 lang: zh

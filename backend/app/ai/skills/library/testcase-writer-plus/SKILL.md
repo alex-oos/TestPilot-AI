@@ -1,5 +1,5 @@
 ---
-name: testcase-writer-plus
+name: 测试用例编写增强版
 description: 解析需求文档和需求分析结果，生成高质量测试用例。
 version: 1.0.0
 lang: zh

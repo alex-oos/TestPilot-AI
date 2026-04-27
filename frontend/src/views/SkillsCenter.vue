@@ -160,6 +160,120 @@
         </div>
       </el-tab-pane>
 
+      <el-tab-pane label="LLM 治理" name="llm">
+        <div style="margin-bottom: 12px">
+          <el-button size="small" @click="loadLlm" :loading="llmLoading">刷新</el-button>
+          <el-button size="small" @click="onPurgeLlmCache">清理过期缓存</el-button>
+          <el-button size="small" type="danger" plain @click="onClearLlmCache">清空全部缓存</el-button>
+          <el-button size="small" type="warning" plain @click="onPurgeAudit">清理 30 天前审计</el-button>
+          <el-input-number v-model="costDays" :min="1" :max="90" size="small" style="margin-left: 12px; width: 120px" />
+          <span style="margin-left: 6px; color:#888; font-size:12px">天</span>
+        </div>
+
+        <el-row :gutter="12" v-if="llm">
+          <el-col :span="6">
+            <el-card shadow="never">
+              <div class="stat-label">缓存命中率</div>
+              <div class="stat-value">{{ formatPct(llm.cache?.hit_rate) }}</div>
+              <div style="color:#888;font-size:12px;margin-top:4px">
+                hit {{ llm.cache?.hits ?? 0 }} / miss {{ llm.cache?.misses ?? 0 }} / put {{ llm.cache?.puts ?? 0 }}
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="never">
+              <div class="stat-label">缓存条目（内存 / SQLite）</div>
+              <div class="stat-value">{{ llm.cache?.mem_size ?? 0 }} / {{ llm.cache?.sqlite_size ?? 0 }}</div>
+              <div style="color:#888;font-size:12px;margin-top:4px">
+                TTL {{ llm.cache?.ttl_hours ?? '-' }}h · 容量 {{ llm.cache?.mem_max ?? '-' }}
+                <span v-if="llm.cache && !llm.cache.enabled" style="color:#e6a23c">（已禁用）</span>
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="never">
+              <div class="stat-label">并发使用</div>
+              <div class="stat-value">{{ llm.concurrency?.current ?? 0 }} / {{ llm.concurrency?.max ?? 0 }}</div>
+              <div style="color:#888;font-size:12px;margin-top:4px">
+                峰值 {{ llm.concurrency?.peak ?? 0 }} · 累计 {{ llm.concurrency?.total_holds ?? 0 }} 次
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="never">
+              <div class="stat-label">{{ costDays }} 天总成本（USD）</div>
+              <div class="stat-value" style="color:#f56c6c">${{ formatCost(llm.cost?.total?.cost_usd) }}</div>
+              <div style="color:#888;font-size:12px;margin-top:4px">
+                {{ llm.cost?.total?.calls ?? 0 }} 次调用 ·
+                缓存命中 {{ llm.cost?.total?.cache_hits ?? 0 }} ·
+                重试 {{ llm.cost?.total?.retries ?? 0 }}
+              </div>
+            </el-card>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="12" v-if="llm" style="margin-top:12px">
+          <el-col :span="12">
+            <el-card shadow="never">
+              <h4 style="margin:0 0 8px 0">按模型聚合</h4>
+              <el-table :data="llm.cost?.by_model || []" size="small" border empty-text="暂无数据">
+                <el-table-column prop="model" label="模型" />
+                <el-table-column prop="calls" label="调用" width="70" />
+                <el-table-column label="prompt" width="100">
+                  <template #default="{ row }">{{ formatNum(row.prompt_tokens) }}</template>
+                </el-table-column>
+                <el-table-column label="completion" width="110">
+                  <template #default="{ row }">{{ formatNum(row.completion_tokens) }}</template>
+                </el-table-column>
+                <el-table-column label="USD" width="100">
+                  <template #default="{ row }">${{ formatCost(row.cost_usd) }}</template>
+                </el-table-column>
+                <el-table-column prop="cache_hits" label="cache" width="70" />
+                <el-table-column prop="retries" label="retry" width="70" />
+              </el-table>
+            </el-card>
+          </el-col>
+          <el-col :span="12">
+            <el-card shadow="never">
+              <h4 style="margin:0 0 8px 0">按角色聚合</h4>
+              <el-table :data="llm.cost?.by_role || []" size="small" border empty-text="暂无数据">
+                <el-table-column prop="role" label="角色" width="120" />
+                <el-table-column prop="calls" label="调用" width="80" />
+                <el-table-column label="prompt" width="100">
+                  <template #default="{ row }">{{ formatNum(row.prompt_tokens) }}</template>
+                </el-table-column>
+                <el-table-column label="completion" width="120">
+                  <template #default="{ row }">{{ formatNum(row.completion_tokens) }}</template>
+                </el-table-column>
+                <el-table-column label="USD">
+                  <template #default="{ row }">${{ formatCost(row.cost_usd) }}</template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+          </el-col>
+        </el-row>
+
+        <el-card v-if="llm?.pricing" shadow="never" style="margin-top:12px">
+          <h4 style="margin:0 0 8px 0">
+            单价表（{{ llm.pricing?.unit || 'per_1M_tokens' }}, {{ llm.pricing?.currency || 'USD' }}）
+          </h4>
+          <el-table :data="pricingRows" size="small" border>
+            <el-table-column prop="model" label="模型" />
+            <el-table-column label="prompt" width="120">
+              <template #default="{ row }">${{ row.prompt }}</template>
+            </el-table-column>
+            <el-table-column label="completion" width="140">
+              <template #default="{ row }">${{ row.completion }}</template>
+            </el-table-column>
+            <el-table-column prop="source" label="来源" width="120">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.source === 'override' ? 'warning' : 'info'">{{ row.source }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
+
       <el-tab-pane label="审计记录" name="audit">
         <div style="margin-bottom: 8px; display: flex; gap: 8px; align-items: center">
           <el-input v-model="auditTaskId" size="small" placeholder="按 task_id 过滤" clearable style="width: 320px" />
@@ -240,9 +354,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listSkills, getSkill, reloadSkills, listAuditRecent, clearAudit, discoverFor, getSkillsHealth, getAuditStats } from '../api/skills'
+import { listSkills, getSkill, reloadSkills, listAuditRecent, clearAudit, discoverFor, getSkillsHealth, getAuditStats,
+  getLlmCacheStats, purgeLlmCache, clearLlmCache, getLlmConcurrencyStats, getLlmPricing, getLlmCostRecent, purgeAudit } from '../api/skills'
 
 const loading = ref(false)
 const summary = ref<any>(null)
@@ -264,6 +379,91 @@ const health = ref<any>(null)
 const healthLoading = ref(false)
 const stats = ref<any>(null)
 const statsLoading = ref(false)
+
+const llm = ref<any>(null)
+const llmLoading = ref(false)
+const costDays = ref(7)
+
+async function loadLlm() {
+  llmLoading.value = true
+  try {
+    const [cacheRes, concRes, priceRes, costRes] = await Promise.all([
+      getLlmCacheStats(),
+      getLlmConcurrencyStats(),
+      getLlmPricing(),
+      getLlmCostRecent(costDays.value),
+    ])
+    llm.value = {
+      cache: (cacheRes as any).data,
+      concurrency: (concRes as any).data,
+      pricing: (priceRes as any).data,
+      cost: (costRes as any).data,
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'LLM 治理数据加载失败')
+  } finally {
+    llmLoading.value = false
+  }
+}
+
+async function onPurgeLlmCache() {
+  try {
+    const res: any = await purgeLlmCache()
+    ElMessage.success(`已清理 ${res.data?.purged_expired ?? 0} 条过期缓存`)
+    loadLlm()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '清理失败')
+  }
+}
+
+async function onClearLlmCache() {
+  await ElMessageBox.confirm('清空全部 LLM 缓存（含 SQLite 持久化）？', '确认', { type: 'warning' })
+  try {
+    const res: any = await clearLlmCache()
+    ElMessage.success(`已清空 ${res.data?.cleared ?? 0} 条 LLM 缓存`)
+    loadLlm()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '清空失败')
+  }
+}
+
+async function onPurgeAudit() {
+  await ElMessageBox.confirm('清理 30 天前的审计记录？', '确认', { type: 'warning' })
+  try {
+    const res: any = await purgeAudit(30)
+    ElMessage.success(`已清理 ${res.data?.purged ?? 0} 条审计记录`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '清理失败')
+  }
+}
+
+const pricingRows = computed<any[]>(() => {
+  const p = llm.value?.pricing
+  if (!p) return []
+  const merged: Record<string, any> = {}
+  for (const [model, rec] of Object.entries(p.default || {})) {
+    const r: any = rec
+    merged[model] = { model, prompt: r.prompt ?? r.input ?? '-', completion: r.completion ?? r.output ?? '-', source: 'default' }
+  }
+  for (const [model, rec] of Object.entries(p.overrides || {})) {
+    const r: any = rec
+    merged[model] = { model, prompt: r.prompt ?? r.input ?? '-', completion: r.completion ?? r.output ?? '-', source: 'override' }
+  }
+  return Object.values(merged)
+})
+
+function formatPct(v: number | null | undefined): string {
+  if (v == null || isNaN(Number(v))) return '-'
+  return (Number(v) * 100).toFixed(1) + '%'
+}
+function formatNum(v: number | null | undefined): string {
+  if (v == null) return '0'
+  return Number(v).toLocaleString()
+}
+function formatCost(v: number | null | undefined): string {
+  if (v == null) return '0.0000'
+  return Number(v).toFixed(4)
+}
 
 async function loadHealth() {
   healthLoading.value = true
@@ -370,6 +570,15 @@ function formatTs(ts: number): string {
   const d = new Date(ts * 1000)
   return d.toLocaleString()
 }
+
+watch(activeTab, (v) => {
+  if (v === 'llm' && !llm.value) loadLlm()
+  if (v === 'health' && !health.value) loadHealth()
+  if (v === 'stats' && !stats.value) loadStats()
+})
+watch(costDays, () => {
+  if (activeTab.value === 'llm') loadLlm()
+})
 
 onMounted(() => {
   loadList(false)

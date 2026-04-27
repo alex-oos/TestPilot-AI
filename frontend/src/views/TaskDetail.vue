@@ -255,6 +255,14 @@
                 <el-table-column prop="id" label="编号" width="70" align="center" />
                 <el-table-column prop="module" label="模块" width="120" />
                 <el-table-column prop="title" label="用例标题" width="200" />
+                <el-table-column label="类型" width="110" align="center">
+                  <template #default="scope">
+                    <el-tag v-if="scope.row.case_type" :type="caseTypeTagType(scope.row.case_type)" effect="plain" size="small">
+                      {{ caseTypeLabel(scope.row.case_type) }}
+                    </el-tag>
+                    <span v-else class="text-gray-300">—</span>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="precondition" label="前置条件" width="130" />
                 <el-table-column prop="steps" label="测试步骤">
                   <template #default="scope">
@@ -262,6 +270,12 @@
                   </template>
                 </el-table-column>
                 <el-table-column prop="expected_result" label="预期结果" />
+                <el-table-column label="测试数据" width="150">
+                  <template #default="scope">
+                    <pre v-if="scope.row.test_data" class="font-sans whitespace-pre-wrap text-xs text-gray-500 m-0">{{ scope.row.test_data }}</pre>
+                    <span v-else class="text-gray-300">—</span>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="priority" label="优先级" width="85" align="center">
                   <template #default="scope">
                     <el-tag :type="scope.row.priority === '高' ? 'danger' : scope.row.priority === '低' ? 'success' : 'warning'" effect="light" round size="small">
@@ -286,6 +300,146 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="📊 用例质量" name="quality">
+          <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mt-4">
+            <div v-if="qualityLoading" class="text-center py-12 text-gray-400">
+              正在评分...
+            </div>
+            <div v-else-if="!quality" class="text-center py-12 text-gray-400">
+              暂无用例可评分
+            </div>
+            <div v-else class="space-y-6">
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="rounded-xl p-4 border" :style="{ borderColor: qualityColor(quality.overall_score) }">
+                  <p class="text-xs text-gray-400">整体得分</p>
+                  <p class="text-3xl font-bold" :style="{ color: qualityColor(quality.overall_score) }">{{ quality.overall_score }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">单条平均分</p>
+                  <p class="text-3xl font-bold text-gray-700">{{ quality.average_case_score }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">用例总数</p>
+                  <p class="text-3xl font-bold text-gray-700">{{ quality.total }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">低质量条数（&lt;{{ quality.low_threshold }}）</p>
+                  <p class="text-3xl font-bold text-red-500">{{ (quality.low_quality_ids || []).length }}</p>
+                </div>
+              </div>
+
+              <div>
+                <h4 class="text-sm font-semibold text-gray-700 mb-2">六维子分</h4>
+                <div class="space-y-2">
+                  <div v-for="(v, k) in quality.sub_scores" :key="k" class="flex items-center gap-3">
+                    <div class="w-32 text-sm text-gray-500">{{ subScoreLabel(String(k)) }}</div>
+                    <el-progress :percentage="Number(v)" :color="qualityColor(Number(v))" :stroke-width="10" class="flex-1" />
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="quality.weak_areas && quality.weak_areas.length" class="rounded-xl bg-amber-50 border border-amber-200 p-4">
+                <p class="text-sm text-amber-700">
+                  <strong>薄弱维度：</strong>
+                  <el-tag v-for="w in quality.weak_areas" :key="w" type="warning" effect="light" size="small" class="ml-1">{{ subScoreLabel(w) }}</el-tag>
+                </p>
+                <p v-if="quality.missing_types && quality.missing_types.length" class="text-sm text-amber-700 mt-2">
+                  <strong>缺失测试类型：</strong>
+                  <el-tag v-for="t in quality.missing_types" :key="t" type="warning" effect="light" size="small" class="ml-1">{{ t }}</el-tag>
+                </p>
+              </div>
+
+              <div>
+                <h4 class="text-sm font-semibold text-gray-700 mb-2">case_type 分布</h4>
+                <el-table :data="typeDistRows" size="small" border>
+                  <el-table-column prop="type" label="类型" min-width="120" />
+                  <el-table-column prop="count" label="数量" width="100" align="center" />
+                  <el-table-column label="占比" min-width="200">
+                    <template #default="scope">
+                      <el-progress :percentage="Math.round((scope.row.count / Math.max(1, quality.total)) * 100)" :stroke-width="8" />
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+
+              <div v-if="quality.low_quality_cases && quality.low_quality_cases.length">
+                <h4 class="text-sm font-semibold text-gray-700 mb-2">低质量用例（最多 20 条）</h4>
+                <el-table :data="quality.low_quality_cases.slice(0, 20)" size="small" border>
+                  <el-table-column prop="case_id" label="编号" width="80" align="center" />
+                  <el-table-column prop="score" label="得分" width="80" align="center">
+                    <template #default="scope">
+                      <span :style="{ color: qualityColor(scope.row.score), fontWeight: 600 }">{{ scope.row.score }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="问题" min-width="320">
+                    <template #default="scope">
+                      <el-tag v-for="(i, idx) in (scope.row.issues || [])" :key="idx" type="danger" effect="plain" size="small" class="mr-1 mb-1">{{ i }}</el-tag>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="💸 AI 调用/成本" name="cost">
+          <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mt-4">
+            <div v-if="callsLoading" class="text-center py-12 text-gray-400">加载中...</div>
+            <div v-else-if="!calls || !calls.items || !calls.items.length" class="text-center py-12 text-gray-400">
+              暂无 LLM 调用审计记录
+            </div>
+            <div v-else class="space-y-5">
+              <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">调用次数</p>
+                  <p class="text-2xl font-bold text-gray-700">{{ calls.total?.calls || 0 }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">输入 Tokens</p>
+                  <p class="text-2xl font-bold text-gray-700">{{ formatNum(calls.total?.prompt_tokens) }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-gray-100">
+                  <p class="text-xs text-gray-400">输出 Tokens</p>
+                  <p class="text-2xl font-bold text-gray-700">{{ formatNum(calls.total?.completion_tokens) }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-emerald-100 bg-emerald-50">
+                  <p class="text-xs text-emerald-700">成本（USD）</p>
+                  <p class="text-2xl font-bold text-emerald-700">${{ formatCost(calls.total?.cost_usd) }}</p>
+                </div>
+                <div class="rounded-xl p-4 border border-indigo-100 bg-indigo-50">
+                  <p class="text-xs text-indigo-700">缓存命中 / 重试</p>
+                  <p class="text-2xl font-bold text-indigo-700">{{ calls.total?.cache_hits || 0 }} / {{ calls.total?.retries || 0 }}</p>
+                </div>
+              </div>
+              <el-table :data="calls.items" size="small" border>
+                <el-table-column prop="role" label="阶段" width="120" />
+                <el-table-column prop="skill_id" label="Skill" min-width="160" />
+                <el-table-column prop="model" label="模型" min-width="140" />
+                <el-table-column label="Tokens" width="160" align="center">
+                  <template #default="scope">
+                    {{ formatNum(scope.row.prompt_tokens_actual) }} / {{ formatNum(scope.row.completion_tokens_actual) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="成本(USD)" width="110" align="right">
+                  <template #default="scope">${{ formatCost(scope.row.cost_usd) }}</template>
+                </el-table-column>
+                <el-table-column label="缓存" width="80" align="center">
+                  <template #default="scope">
+                    <el-tag v-if="scope.row.cache_hit" type="success" effect="light" size="small">命中</el-tag>
+                    <span v-else class="text-gray-300">—</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="retries" label="重试" width="70" align="center" />
+                <el-table-column label="错误码" width="120">
+                  <template #default="scope">
+                    <el-tag v-if="scope.row.error_code && scope.row.error_code !== 'ok'" type="danger" effect="plain" size="small">{{ scope.row.error_code }}</el-tag>
+                    <el-tag v-else type="success" effect="plain" size="small">ok</el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
 
       </el-tabs>
     </div>
@@ -328,6 +482,101 @@ const exporting = ref({ excel: false, xmind: false, ms: false })
 const selectedStage = ref<PhaseKey>('analysis')
 const reviewEditableCases = ref<any[]>([])
 const savingReviewCases = ref(false)
+
+// ---- 用例质量门禁（quality tab） ----
+const quality = ref<any | null>(null)
+const qualityLoading = ref(false)
+
+// ---- AI 调用 / 成本（cost tab） ----
+const calls = ref<any | null>(null)
+const callsLoading = ref(false)
+
+const CASE_TYPE_LABEL: Record<string, string> = {
+  '功能-正向': '功能-正向',
+  '功能-反向': '功能-反向',
+  '边界值': '边界值',
+  '异常处理': '异常处理',
+  '权限/角色': '权限/角色',
+  '并发/时序': '并发/时序',
+  '数据校验': '数据校验',
+  '兼容/UI': '兼容/UI',
+  '性能/容量': '性能/容量',
+}
+const CASE_TYPE_TYPE: Record<string, 'success' | 'info' | 'warning' | 'danger' | 'primary'> = {
+  '功能-正向': 'success',
+  '功能-反向': 'warning',
+  '边界值': 'info',
+  '异常处理': 'danger',
+  '权限/角色': 'primary',
+  '并发/时序': 'warning',
+  '数据校验': 'info',
+  '兼容/UI': 'info',
+  '性能/容量': 'danger',
+}
+const SUB_SCORE_LABEL: Record<string, string> = {
+  coverage: '覆盖度',
+  completeness: '完整性',
+  executability: '可执行',
+  boundary: '边界覆盖',
+  data_accuracy: '数据精确',
+  priority_balance: '优先级均衡',
+}
+
+function caseTypeLabel(t: string) { return CASE_TYPE_LABEL[t] || t }
+function caseTypeTagType(t: string) { return CASE_TYPE_TYPE[t] || 'info' }
+function subScoreLabel(k: string) { return SUB_SCORE_LABEL[k] || k }
+function qualityColor(score: number) {
+  if (score >= 85) return '#10b981'
+  if (score >= 70) return '#3b82f6'
+  if (score >= 60) return '#f59e0b'
+  return '#ef4444'
+}
+function formatNum(v: number | undefined | null) {
+  const n = Number(v || 0)
+  return n.toLocaleString('en-US')
+}
+function formatCost(v: number | undefined | null) {
+  const n = Number(v || 0)
+  return n < 0.01 ? n.toFixed(6) : n.toFixed(4)
+}
+
+const typeDistRows = computed(() => {
+  if (!quality.value || !quality.value.type_distribution) return []
+  return Object.entries(quality.value.type_distribution).map(([type, count]) => ({ type, count: Number(count) }))
+})
+
+async function loadQuality() {
+  if (!cases.value || !cases.value.length) return
+  qualityLoading.value = true
+  try {
+    const skillsApi = await import('../api/skills')
+    const r = await skillsApi.getTaskQuality(taskId)
+    quality.value = (r as any)?.data || r
+  } catch (e: any) {
+    try {
+      const skillsApi = await import('../api/skills')
+      const r2 = await skillsApi.scoreCases(cases.value)
+      quality.value = (r2 as any)?.data || r2
+    } catch (e2) {
+      quality.value = null
+    }
+  } finally {
+    qualityLoading.value = false
+  }
+}
+
+async function loadCalls() {
+  callsLoading.value = true
+  try {
+    const skillsApi = await import('../api/skills')
+    const r = await skillsApi.getTaskLlmCalls(taskId)
+    calls.value = (r as any)?.data || r
+  } catch (e) {
+    calls.value = null
+  } finally {
+    callsLoading.value = false
+  }
+}
 
 const task = ref<TaskDetail>({
   id: taskId,
@@ -817,6 +1066,19 @@ watch(
       fetchMindMapData()
     }
   }
+)
+
+// 监听 activeTab 变化，按需加载质量评分 / AI 调用
+watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === 'quality' && !quality.value && !qualityLoading.value) {
+      loadQuality()
+    }
+    if (tab === 'cost' && !calls.value && !callsLoading.value) {
+      loadCalls()
+    }
+  },
 )
 </script>
 

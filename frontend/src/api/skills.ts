@@ -73,3 +73,45 @@ export async function getAuditStats() {
 export async function getSkillsHealth() {
   return request.get('/ai/skills/health')
 }
+
+// ---- 用例质量门禁 ----
+export async function getTaskQuality(taskId: string) {
+  return request.get(`/ai/quality/task/${encodeURIComponent(taskId)}`)
+}
+
+export async function scoreCases(cases: any[], lowThreshold?: number) {
+  return request.post('/ai/quality/score', { cases, low_threshold: lowThreshold })
+}
+
+// ---- LLM 治理观测 ----
+export async function getLlmCacheStats() {
+  return request.get('/ai/llm/cache/stats')
+}
+
+export async function purgeLlmCache() {
+  return request.post('/ai/llm/cache/purge')
+}
+
+export async function clearLlmCache() {
+  return request.delete('/ai/llm/cache')
+}
+
+export async function getLlmConcurrencyStats() {
+  return request.get('/ai/llm/concurrency/stats')
+}
+
+export async function getLlmPricing() {
+  return request.get('/ai/llm/pricing')
+}
+
+export async function getLlmCostRecent(days = 7) {
+  return request.get('/ai/llm/cost/recent', { params: { days } })
+}
+
+export async function getTaskLlmCalls(taskId: string) {
+  return request.get(`/ai/llm/task/${encodeURIComponent(taskId)}/calls`)
+}
+
+export async function purgeAudit(days?: number) {
+  return request.post('/ai/skills/audit/purge', null, { params: days ? { days } : undefined })
+}

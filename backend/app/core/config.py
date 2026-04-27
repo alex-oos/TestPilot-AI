@@ -100,15 +100,38 @@ class Settings(BaseSettings):
     # 是否把审计落库到独立 SQLite 表 skill_audits
     QA_SKILL_AUDIT_PERSIST: bool = True
 
+    # === LLM 治理（重试 / 缓存 / 成本 / 并发） ===
+    LLM_RETRY_MAX: int = 3                    # 总尝试次数（包含首次）
+    LLM_RETRY_BASE_DELAY: float = 1.0         # 指数退避基础（秒）
+    LLM_RETRY_MAX_DELAY: float = 30.0         # 单次最大等待秒
+    LLM_CACHE_ENABLED: bool = True
+    LLM_CACHE_TTL_HOURS: int = 168            # 7 天
+    LLM_CACHE_MEM_MAX: int = 256              # 内存 LRU 容量
+    LLM_PRICING_OVERRIDES: str = ""           # JSON 字符串，自定义模型单价
+    LLM_MAX_CONCURRENCY: int = 4              # 同进程 LLM 并发上限
+
+    AUDIT_RETENTION_DAYS: int = 30            # skill_audits 保留天数
+    SKILL_AUTO_RELOAD: bool = False           # mtime 变更自动 reload skill
+
+    # === 用例质量门禁 ===
+    QUALITY_GATE_LOW_THRESHOLD: int = 60
+    QUALITY_GATE_REFINE_ENABLED: bool = True
+    QUALITY_GATE_REFINE_MAX: int = 30
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
 
 settings = Settings()
 
-if settings.JWT_SECRET_KEY == "please-change-this-secret":
+_WEAK_JWT_SECRETS = {
+    "please-change-this-secret",
+    "please-change-this-to-a-strong-random-secret",
+    "",
+}
+if settings.JWT_SECRET_KEY in _WEAK_JWT_SECRETS or len(settings.JWT_SECRET_KEY) < 32:
     import warnings
     warnings.warn(
-        "JWT_SECRET_KEY 使用默认值，请在 .env 中设置安全的密钥！",
+        "JWT_SECRET_KEY 太弱或使用默认值，请在 .env 中设置 ≥32 字符的安全密钥！",
         stacklevel=1,
     )
