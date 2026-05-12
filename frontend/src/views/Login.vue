@@ -12,14 +12,16 @@
       <div class="w-1/2 p-12 bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex flex-col justify-center relative hidden md:flex">
         <div class="absolute inset-0 bg-black/10"></div>
         <div class="relative z-10">
-          <h2 class="text-4xl font-bold mb-6 font-display tracking-tight">秒级生成测试用例。</h2>
-          <p class="text-indigo-100 text-lg mb-8 leading-relaxed">
-            利用 AI 的力量，瞬间将您的产品需求转化为全面的测试用例。轻松连接飞书和钉钉文档，或直接本地上传。
+          <div class="text-5xl mb-4">🌙</div>
+          <h2 class="text-3xl font-bold mb-4 font-display tracking-tight">月亮邮寄员</h2>
+          <h3 class="text-xl font-medium mb-6 text-indigo-200">项目管理平台</h3>
+          <p class="text-indigo-100 text-base mb-8 leading-relaxed">
+            一站式项目管理、需求跟踪、人力排期、AI 测试用例生成，让团队协作如月光般流畅。
           </p>
           <div class="flex items-center gap-4 text-sm font-medium text-indigo-200">
-            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> 快速</div>
-            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> 准确</div>
-            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> 一体化</div>
+            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> 项目管理</div>
+            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> 需求追踪</div>
+            <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400"></span> AI 驱动</div>
           </div>
         </div>
       </div>
@@ -28,7 +30,7 @@
         <div class="w-full md:w-1/2 p-12 flex flex-col justify-center">
         <div class="mb-10 text-center md:text-left">
           <h1 class="text-3xl font-bold text-gray-900 mb-2">欢迎回来</h1>
-          <p class="text-gray-500">登录 AI 测试平台</p>
+          <p class="text-gray-500">登录月亮邮寄员项目管理平台</p>
         </div>
 
         <el-form :model="loginForm" @submit.prevent="handleLogin" class="space-y-6" size="large">
@@ -70,8 +72,10 @@
       </div>
     </div>
 
-    <footer class="h-10 text-gray-600 text-sm flex items-center justify-center z-10">
-      2026 ALex 版权所有
+    <footer class="h-10 text-gray-500 text-xs flex items-center justify-center z-10 gap-2">
+      <span>🌙 月亮邮寄员项目管理平台 v1.0.0</span>
+      <span class="text-gray-300">|</span>
+      <span>&copy; 2026 ALex. All rights reserved.</span>
     </footer>
     </div>
 </template>
@@ -82,6 +86,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { loginByFallback } from '../api/login'
 import { useUserStore } from '../stores/user'
+import request from '../utils/request'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -115,6 +120,15 @@ const handleLogin = async () => {
       user: payload.user || loginForm.username,
       user_id: payload.user_id,
     })
+
+    if (payload.user_id) {
+      try {
+        const empResp = await request.get('/dashboard/my-info', { params: { user_id: payload.user_id } })
+        const empData = empResp.data?.data
+        if (empData) userStore.setEmployee(empData)
+      } catch {}
+    }
+
     ElMessage.success('登录成功！')
     router.push('/tasks')
   } catch (error: any) {
