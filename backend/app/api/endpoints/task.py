@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from loguru import logger
 from app.core.auth import get_current_user
+from app.core.database import get_db
 from app.core.response import success
 from app.services import file_service
 from app.services import task_service
@@ -65,6 +66,8 @@ async def submit_generation_task_stream(
     manual_description: Optional[str] = Form(None),
     related_project: Optional[str] = Form(None),
     submitter: Optional[str] = Form(None),
+    project_id: Optional[int] = Form(None),
+    requirement_id: Optional[int] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -80,6 +83,12 @@ async def submit_generation_task_stream(
         normalized_source,
         file.filename if file else None,
     )
+    extra_meta = {}
+    if project_id:
+        extra_meta["project_id"] = project_id
+    if requirement_id:
+        extra_meta["requirement_id"] = requirement_id
+
     if normalized_source == "local":
         if not file:
             raise HTTPException(status_code=400, detail="本地文件模式必须上传文件")
@@ -90,6 +99,7 @@ async def submit_generation_task_stream(
             requirements=requirements,
             task_name=task_name,
             submitter=submitter,
+            extra_meta=extra_meta,
         )
     else:
         data = await test_case_generation_service.submit_generation_task(
@@ -102,6 +112,7 @@ async def submit_generation_task_stream(
             related_project=related_project,
             submitter=submitter,
             file=file,
+            extra_meta=extra_meta,
         )
     return success(data, request.state.tid)
 
@@ -195,9 +206,19 @@ async def retry_task(request: Request, task_id: str, background_tasks: Backgroun
 
 
 @router.put("/tasks/{task_id}/review-cases")
-async def update_review_cases(request: Request, task_id: str, payload: UpdateReviewCasesRequest, current_user: dict = Depends(get_current_user)):
+async def update_review_cases(
+    request: Request,
+    task_id: str,
+    payload: UpdateReviewCasesRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
     """评审后修改测试用例，并删除不采纳的用例。"""
-    data = await test_case_generation_service.update_review_cases(task_id, [item.model_dump() for item in payload.cases])
+    data = await test_case_generation_service.update_review_cases(
+        task_id,
+        [item.model_dump() for item in payload.cases],
+        db=db,
+    )
     return success(data, request.state.tid)
 
 

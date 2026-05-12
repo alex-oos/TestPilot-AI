@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
+from sqlalchemy import func, select
+
 from app.core.database import AsyncSessionLocal
+from app.models import Task
 from app.repositories import TaskTableRepository
 
 
@@ -16,7 +20,6 @@ def _parse_time(value: Optional[str]) -> Optional[datetime]:
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            # keep consistent with persisted UTC-like timestamps
             return dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
         return dt
     except Exception:
@@ -39,6 +42,28 @@ def _safe_pct(numerator: float, denominator: float) -> float:
     return _round1((numerator / denominator) * 100.0)
 
 
+async def _fetch_aggregates() -> tuple[int, dict, dict]:
+    """Single-session combined aggregation: total, by-status, by-source in one pass."""
+    async with AsyncSessionLocal() as db:
+        total_r = await db.execute(select(func.count()).select_from(Task))
+        status_r = await db.execute(select(Task.status, func.count()).group_by(Task.status))
+        source_r = await db.execute(select(Task.source_type, func.count()).group_by(Task.source_type))
+    total = int(total_r.scalar() or 0)
+    status_counts = {str(s or ""): int(c or 0) for s, c in status_r.all()}
+    source_counts = {str(s or ""): int(c or 0) for s, c in source_r.all()}
+    return total, status_counts, source_counts
+
+
+async def _fetch_recent_tasks(since: datetime) -> list[Task]:
+    """Only load tasks created within the time window needed for weekly stats."""
+    async with AsyncSessionLocal() as db:
+        since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+        result = await db.execute(
+            select(Task).where(Task.created_at >= since_str)
+        )
+        return list(result.scalars().all())
+
+
 async def get_dashboard_overview() -> Dict[str, Any]:
     tz = datetime.now().astimezone().tzinfo
     now = datetime.now(tz=tz)
@@ -46,16 +71,15 @@ async def get_dashboard_overview() -> Dict[str, Any]:
     week_end = week_start + timedelta(days=7)
     prev_week_start = week_start - timedelta(days=7)
 
-    async with AsyncSessionLocal() as db:
-        total_tasks = await TaskTableRepository.count_all(db)
-        status_counts = await TaskTableRepository.count_by_status(db)
-        source_counts = await TaskTableRepository.count_by_source_type(db)
-        tasks = await TaskTableRepository.list_all(db)
+    (total_tasks, status_counts, source_counts), tasks = await asyncio.gather(
+        _fetch_aggregates(),
+        _fetch_recent_tasks(prev_week_start),
+    )
 
     completed_tasks = int(status_counts.get("completed", 0))
     coverage_rate = _safe_pct(completed_tasks, total_tasks)
 
-    weekly_activity = [0, 0, 0, 0, 0, 0, 0]  # Monday -> Sunday
+    weekly_activity = [0, 0, 0, 0, 0, 0, 0]
     this_week_total = 0
     prev_week_total = 0
     this_week_completed = 0
@@ -109,31 +133,20 @@ async def get_dashboard_overview() -> Dict[str, Any]:
     source_distribution = []
     for source_type, label, icon in source_meta:
         count = int(source_counts.get(source_type, 0))
-        source_distribution.append(
-            {
-                "source_type": source_type,
-                "label": label,
-                "icon": icon,
-                "count": count,
-                "percent": _safe_pct(count, total_tasks),
-            }
-        )
+        source_distribution.append({
+            "source_type": source_type, "label": label, "icon": icon,
+            "count": count, "percent": _safe_pct(count, total_tasks),
+        })
 
-    # Include unknown sources if any
     known = {x[0] for x in source_meta}
     for source_type, count in source_counts.items():
         if source_type in known:
             continue
-        source_distribution.append(
-            {
-                "source_type": source_type or "unknown",
-                "label": source_type or "未知来源",
-                "icon": "🧩",
-                "count": int(count),
-                "percent": _safe_pct(int(count), total_tasks),
-            }
-        )
-
+        source_distribution.append({
+            "source_type": source_type or "unknown",
+            "label": source_type or "未知来源", "icon": "🧩",
+            "count": int(count), "percent": _safe_pct(int(count), total_tasks),
+        })
     source_distribution.sort(key=lambda x: x["count"], reverse=True)
 
     labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
