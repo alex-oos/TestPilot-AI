@@ -1,10 +1,11 @@
 """QA Skills 管理 / 审计 / 智能路由相关 API。"""
 import json
-import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import quality_gate
 from app.ai import llm_cache, llm_concurrency, llm_pricing
@@ -17,6 +18,7 @@ from app.ai.skills import (
 from app.ai.skills.loader import SkillNotFoundError
 from app.core.auth import get_current_user
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.response import success
 
 router = APIRouter()
@@ -217,29 +219,14 @@ async def quality_score(
     return success(payload, request.state.tid)
 
 
-def _resolve_app_db_path() -> Path:
-    base = Path(__file__).resolve().parents[3]  # backend/
-    db = settings.SQLITE_DB_PATH
-    if db.startswith("./"):
-        db = db[2:]
-    return (base / db).resolve()
-
-
-def _load_task_generation_cases(task_id: str) -> list[dict]:
-    """从 task_details.data_json 中读取 generation 阶段产出的 cases。"""
-    db_path = _resolve_app_db_path()
-    if not db_path.exists():
-        return []
+async def _load_task_generation_cases(task_id: str, db: AsyncSession) -> list[dict]:
+    """从 task_details.data_json 中异步读取 generation 阶段产出的 cases。"""
     try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            cur = conn.execute(
-                "SELECT data_json FROM task_details WHERE task_id=? AND phase_key=?",
-                (task_id, "generation"),
-            )
-            row = cur.fetchone()
-        finally:
-            conn.close()
+        result = await db.execute(
+            text("SELECT data_json FROM task_details WHERE task_id=:tid AND phase_key=:pk"),
+            {"tid": task_id, "pk": "generation"},
+        )
+        row = result.first()
     except Exception:
         return []
     if not row or not row[0]:
@@ -262,10 +249,11 @@ def _load_task_generation_cases(task_id: str) -> list[dict]:
 async def quality_task(
     task_id: str,
     request: Request,
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """读取指定 task 的 generation 用例并实时打分。"""
-    cases = _load_task_generation_cases(task_id)
+    cases = await _load_task_generation_cases(task_id, db)
     if not cases:
         raise HTTPException(status_code=404, detail=f"task {task_id} 没有可读取的 generation 用例")
     audit = quality_gate.score_cases(cases)

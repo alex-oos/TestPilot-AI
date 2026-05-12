@@ -86,7 +86,7 @@ def generate_xmind_file(cases: List[dict], title: str = "AI自动生成测试用
         # metadata.json（可选但推荐）
         metadata = {
             "creator": {
-                "name": "AI Test Platform",
+                "name": "月亮邮寄员项目管理平台",
                 "version": "1.0.0"
             }
         }
