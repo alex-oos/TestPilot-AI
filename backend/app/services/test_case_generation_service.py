@@ -5,8 +5,12 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.models.test_case_model import TestCase, TestCaseStep
 from app.rag.knowledge_base import (
     build_generation_history_context,
     find_similar_requirement_history,
@@ -17,6 +21,97 @@ from app.services import file_service, task_service
 from app.services.exporter import convert_cases_to_mindmap
 from app.services.ms_sync import sync_cases_to_ms
 from app.services.pipeline import run_generation_pipeline
+from app.util.time_utils import now_str
+
+
+async def _merge_extra_meta_to_upload(task_id: str, extra_meta: dict) -> None:
+    """Merge extra metadata (project_id, requirement_id) into the upload phase data."""
+    task = await task_service.get_task(task_id)
+    if not task:
+        return
+    phases = task.get("phases") or {}
+    upload_phase = phases.get("upload") or {}
+    existing_data = upload_phase.get("data") or {}
+    if isinstance(existing_data, str):
+        try:
+            existing_data = json.loads(existing_data)
+        except Exception:
+            existing_data = {}
+    existing_data.update(extra_meta)
+    await task_service.update_phase(task_id, "upload", upload_phase.get("status", "completed"), existing_data)
+
+
+def _task_upload_meta(task: dict) -> dict:
+    phases = task.get("phases") or {}
+    upload_data = (phases.get("upload") or {}).get("data") or {}
+    return upload_data if isinstance(upload_data, dict) else {}
+
+
+async def _persist_adopted_cases_to_library(
+    db: AsyncSession,
+    *,
+    task_id: str,
+    cases: list[dict],
+    project_id: int | None,
+    requirement_id: int | None,
+) -> dict:
+    ts = now_str()
+    ids: list[int] = []
+    created = 0
+    updated = 0
+
+    for item in cases:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+
+        stmt = (
+            select(TestCase)
+            .options(selectinload(TestCase.steps))
+            .where(
+                TestCase.task_id == task_id,
+                TestCase.title == title,
+                TestCase.source == "ai",
+            )
+        )
+        if requirement_id is not None:
+            stmt = stmt.where(TestCase.requirement_id == requirement_id)
+        result = await db.execute(stmt)
+        case = result.scalars().first()
+
+        if not case:
+            case = TestCase(created_at=ts, updated_at=ts)
+            db.add(case)
+            created += 1
+        else:
+            case.steps.clear()
+            updated += 1
+
+        case.title = title
+        case.module = str(item.get("module") or "默认模块")
+        case.priority = str(item.get("priority") or "medium")
+        case.case_type = str(item.get("case_type") or "functional")
+        case.precondition = str(item.get("precondition") or "")
+        case.description = str(item.get("expected_result") or "")
+        case.status = "active"
+        case.source = "ai"
+        case.project_id = project_id
+        case.requirement_id = requirement_id
+        case.task_id = task_id
+        case.updated_at = ts
+        case.steps.append(TestCaseStep(
+            order=1,
+            action=str(item.get("steps") or ""),
+            expected_result=str(item.get("expected_result") or ""),
+            test_data=str(item.get("test_data") or "") or None,
+            created_at=ts,
+            updated_at=ts,
+        ))
+        await db.flush()
+        ids.append(case.id)
+
+    await db.commit()
+    return {"count": len(ids), "ids": ids, "created": created, "updated": updated}
 
 
 def _yield_markdown_text(text: str, *, chunk_size: int = 300) -> AsyncGenerator[str, None]:
@@ -89,6 +184,7 @@ async def submit_stream_generation_task(
     requirements: Optional[str],
     task_name: Optional[str],
     submitter: Optional[str],
+    extra_meta: Optional[dict] = None,
 ) -> dict:
     prepared = await file_service.prepare_stream_generation_file(file=file)
     final_task_name = (task_name or "").strip() or file_service.default_task_name("local", prepared["file_name"], None)
@@ -102,17 +198,20 @@ async def submit_stream_generation_task(
         status_text="任务已入队，准备执行",
         submitter=submitter,
     )
+    phase_data = {
+        "file_id": prepared["file_id"],
+        "file_name": prepared["file_name"],
+        "file_path": prepared["file_path"],
+        "context": context or "",
+        "requirements": requirements or "",
+    }
+    if extra_meta:
+        phase_data.update(extra_meta)
     await task_service.update_phase(
         task_id,
         "upload",
         "completed",
-        {
-            "file_id": prepared["file_id"],
-            "file_name": prepared["file_name"],
-            "file_path": prepared["file_path"],
-            "context": context or "",
-            "requirements": requirements or "",
-        },
+        phase_data,
     )
 
     background_tasks.add_task(
@@ -170,6 +269,7 @@ async def submit_generation_task(
     related_project: Optional[str],
     submitter: Optional[str],
     file: Optional[UploadFile],
+    extra_meta: Optional[dict] = None,
 ) -> dict:
     source_type = (source_type or "").strip().lower()
 
@@ -183,6 +283,8 @@ async def submit_generation_task(
             file_name="manual_input.txt",
             file_content=manual_content,
         )
+        if extra_meta:
+            await _merge_extra_meta_to_upload(created["task_id"], extra_meta)
         await start_generation_task(task_id=created["task_id"], background_tasks=background_tasks, submitter=submitter)
         return {"task_id": created["task_id"], "task_status": "需求描述分析中", "file_id": created["file_id"]}
 
@@ -200,6 +302,8 @@ async def submit_generation_task(
             file_name=file.filename or "upload.bin",
             file_content=file_content,
         )
+        if extra_meta:
+            await _merge_extra_meta_to_upload(created["task_id"], extra_meta)
         await start_generation_task(task_id=created["task_id"], background_tasks=background_tasks, submitter=submitter)
         return {"task_id": created["task_id"], "task_status": "本地文件分析中", "file_id": created["file_id"]}
 
@@ -217,6 +321,8 @@ async def submit_generation_task(
         status_text="待分析",
         submitter=submitter,
     )
+    if extra_meta:
+        await _merge_extra_meta_to_upload(task_id, extra_meta)
     await start_generation_task(task_id=task_id, background_tasks=background_tasks, submitter=submitter)
     return {"task_id": task_id, "task_status": "需求描述分析中"}
 
@@ -352,7 +458,7 @@ async def apply_task_decision(
     return {"task_id": task_id, "decision_status": normalized, "task_status": "manual_reviewing", "task": updated_task}
 
 
-async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
+async def update_review_cases(task_id: str, reviewed_cases: list[dict], db: AsyncSession | None = None) -> dict:
     task = await task_service.get_task_or_404(task_id)
     if not isinstance(reviewed_cases, list) or not reviewed_cases:
         raise HTTPException(status_code=400, detail="评审用例不能为空")
@@ -379,20 +485,40 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
 
     adopted_cases = [item for item in normalized_cases if item.get("adoption_status") == "accepted"]
     rejected_count = len(normalized_cases) - len(adopted_cases)
-    kb_adopted = {"case_count": 0}
+    kb_adopted = {"case_count": 0, "error": None}
     if adopted_cases:
-        kb_adopted = await asyncio.to_thread(
-            ingest_adopted_test_cases,
+        try:
+            kb_adopted = await asyncio.to_thread(
+                ingest_adopted_test_cases,
+                task_id=task_id,
+                cases=adopted_cases,
+                source_type=str(task.get("source_type") or "manual_review"),
+                file_name=str(task.get("file_name") or task.get("task_name") or ""),
+                submitter="manual_review",
+            )
+            logger.info(
+                "Task {} reviewed cases ingested into KB: {}",
+                task_id,
+                kb_adopted.get("case_count", 0),
+            )
+        except Exception as exc:
+            kb_adopted = {"case_count": 0, "error": str(exc)}
+            logger.warning("Task {} KB ingest skipped: {}", task_id, exc)
+
+    library_adopted = {"count": 0, "ids": [], "created": 0, "updated": 0}
+    if db is not None and adopted_cases:
+        upload_meta = _task_upload_meta(task)
+        library_adopted = await _persist_adopted_cases_to_library(
+            db,
             task_id=task_id,
             cases=adopted_cases,
-            source_type=str(task.get("source_type") or "manual_review"),
-            file_name=str(task.get("file_name") or task.get("task_name") or ""),
-            submitter="manual_review",
+            project_id=upload_meta.get("project_id"),
+            requirement_id=upload_meta.get("requirement_id"),
         )
         logger.info(
-            "Task {} reviewed cases ingested into KB: {}",
+            "Task {} reviewed cases persisted into test case library: {}",
             task_id,
-            kb_adopted.get("case_count", 0),
+            library_adopted.get("count", 0),
         )
 
     await task_service.update_phase(task_id, "generation", "completed", {"cases": adopted_cases})
@@ -426,12 +552,20 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict]) -> dict:
             "knowledge_base": {
                 "adopted_cases_ingested": kb_adopted.get("case_count", 0),
             },
+            "test_case_library": library_adopted,
             "status": "人工审核完成",
         },
     )
     await task_service.set_task_status(task_id, "completed", status_text="任务已完成")
     updated_task = await task_service.get_task(task_id)
-    return {"task_id": task_id, "adopted_count": len(adopted_cases), "rejected_count": rejected_count, "task": updated_task}
+    return {
+        "task_id": task_id,
+        "adopted_count": len(adopted_cases),
+        "rejected_count": rejected_count,
+        "library_count": library_adopted.get("count", 0),
+        "library_case_ids": library_adopted.get("ids", []),
+        "task": updated_task,
+    }
 
 
 async def sync_to_ms(cases: list[dict]) -> dict:
