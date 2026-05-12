@@ -46,7 +46,7 @@ async def notify_task_event(
     cfg = await config_center_store.get_config_center()
     notifications = cfg.get("notifications") or {}
 
-    title = "[AI测试平台] 任务状态通知"
+    title = "[月亮邮寄员] 任务状态通知"
     lines: List[str] = [
         f"任务ID: {task_id}",
         f"任务状态: {task_status}",
@@ -95,7 +95,7 @@ async def notify_dingtalk_adoption_decision(
     reject_link = f"{base_url}/api/tasks/{task_id}/decision?decision=rejected&by=dingtalk"
 
     content = (
-        "[AI测试平台] 用例评审已完成，请确认是否采纳\n"
+        "[月亮邮寄员] 用例评审已完成，请确认是否采纳\n"
         f"任务ID: {task_id}\n"
         f"提交人: {submitter}\n"
         f"评审摘要: {review_summary or '无'}\n"
