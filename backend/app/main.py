@@ -1,7 +1,10 @@
+import os
+
 import typer
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.application import app_settings
 from app.application.urls import urlpatterns
@@ -44,6 +47,11 @@ def create_app() -> FastAPI:
             prefix=f"{app_settings.api_prefix}{item['prefix']}",
             tags=item["tags"],
         )
+
+    uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
     return app
 
 
