@@ -9,6 +9,9 @@ def utc_now_text() -> str:
     return datetime.now(_BEIJING_TZ).strftime(_DB_TIME_FORMAT)
 
 
+now_str = utc_now_text
+
+
 def to_beijing_time_text(value: Any) -> str:
     if value is None:
         return ""
