@@ -5,8 +5,8 @@ from app.core.config import settings
 
 @dataclass(frozen=True)
 class AppSettings:
-    title: str = "AI Test Platform API"
-    description: str = "A centralized testing platform for AI generated content."
+    title: str = "月亮邮寄员项目管理平台 API"
+    description: str = "🌙 月亮邮寄员 — 一站式项目管理、需求追踪、人力排期与 AI 测试平台"
     version: str = "1.0.0"
     docs_url: str | None = "/docs"
     redoc_url: str | None = "/redoc"
