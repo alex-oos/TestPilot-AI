@@ -2,6 +2,138 @@
 
 AI 测试用例生成平台：支持飞书/钉钉文档、本地文件（含图片 OCR）、手动输入，完成需求分析 → 用例生成 → 用例评审 → 人工采纳 → 经验沉淀（向量库）全流程。
 
+## 今日版本改动总览（2026-05-12 · 一体化测试管理平台）
+
+> 主题：在原 AI 测试用例生成链路之上，扩展为覆盖“项目 → 需求 → 人力排期 → 用例 → 执行 → 缺陷 → 报告”的测试管理平台，并补齐接口自动化、性能管理和效率工具入口。
+
+### 一、本轮新增能力一览
+
+| # | 能力 | 关键模块 | 价值 |
+|---|------|---------|------|
+| 1 | **项目工作流** | `projects` / `requirements` / `hr` API + 前端项目、需求、人力页面 | 支持项目、版本、成员、需求、流程节点人员和测试排期统一管理 |
+| 2 | **角色化数据看板** | `dashboard.py` / `Dashboard.vue` | 超级管理员查看全局项目、需求、缺陷、人员统计；普通角色按自身参与节点查看项目和需求 |
+| 3 | **测试用例库** | `test_cases.py` / `test_case_model.py` / `TestCaseList.vue` | AI 生成结果可按项目和需求沉淀为正式用例，支持列表、详情、模块过滤、统计和批量采纳 |
+| 4 | **测试执行与报告** | `execution_model.py` / `TestExecution*.vue` / `TestReportDetail.vue` | 支持创建测试执行、维护执行结果、开始/终止执行，并从执行记录生成测试报告 |
+| 5 | **缺陷管理** | `defects.py` / `defect_model.py` / `DefectList.vue` / `DefectDetail.vue` | 支持缺陷 CRUD、项目维度统计、评论和变更历史 |
+| 6 | **接口自动化管理** | `api_automation.py` / `api_automation_model.py` / `api-automation/*` | 支持接口、环境、接口用例和执行记录管理 |
+| 7 | **性能管理** | `performance.py` / `performance_model.py` / `performance/*` | 支持性能场景、脚本、执行记录和基线管理 |
+| 8 | **效率工具** | `efficiency_tools.py` / `DatabaseTool.vue` / `ServerTool.vue` | 提供 MySQL 连接测试、SQL 查询、表结构查看、服务器 ping 和端口检查 |
+| 9 | **导航与前端框架升级** | `AdminLayout.vue` / `router/index.ts` / `package.json` | 新增“项目工作流”“质量中心”“缺陷管理”“效率提升”等分组导航，并接入 CodeMirror、拖拽排序、思维导图组件 |
+| 10 | **初始化与兼容迁移** | `db_initializer.py` / `seed_data.py` | 启动时自动补齐新列并建表；新增幂等种子数据脚本，便于快速体验完整主流程 |
+
+### 二、新增 / 增强的主要 API
+
+```text
+# 项目与需求
+GET/POST       /projects
+GET/PUT/DELETE /projects/{project_id}
+GET/POST       /projects/{project_id}/versions
+GET/POST       /projects/{project_id}/members
+GET            /projects/{project_id}/test-schedule
+GET/POST       /requirements
+GET/PUT/DELETE /requirements/{req_id}
+GET            /requirements/{req_id}/traces
+GET            /requirements/{req_id}/node-members
+PUT            /requirements/{req_id}/node-members/{node}
+
+# 人力与排期
+GET/POST       /hr/employees
+GET/PUT/DELETE /hr/employees/{emp_id}
+GET/POST       /hr/teams
+GET/POST       /hr/schedules
+POST           /hr/schedules/conflicts
+POST           /hr/schedules/batch
+GET/POST       /hr/leaves
+GET/POST       /hr/employees/{emp_id}/skills
+
+# 测试资产
+GET/POST       /test-cases
+GET/PUT/DELETE /test-cases/{case_id}
+GET            /test-cases/modules
+GET            /test-cases/stats/summary
+POST           /test-cases/batch-adopt
+GET/POST       /test-executions
+GET/PUT/DELETE /test-executions/{exec_id}
+PUT            /test-executions/{exec_id}/cases
+PUT            /test-executions/{exec_id}/results/{result_id}
+PUT            /test-executions/{exec_id}/start
+PUT            /test-executions/{exec_id}/abort
+POST           /test-executions/{exec_id}/report
+GET            /test-reports
+GET            /test-reports/{report_id}
+
+# 缺陷、接口自动化、性能、效率工具
+GET/POST       /defects
+GET/PUT/DELETE /defects/{defect_id}
+GET/POST       /defects/{defect_id}/comments
+GET            /defects/{defect_id}/history
+GET/POST       /api-automation/endpoints
+GET/POST       /api-automation/environments
+GET/POST       /api-automation/test-cases
+GET/POST       /api-automation/executions
+GET/POST       /performance/scenarios
+GET/POST       /performance/scenarios/{scenario_id}/scripts
+GET            /performance/executions
+GET/POST       /performance/baselines
+POST           /efficiency-tools/db/test-connect
+POST           /efficiency-tools/db/query
+POST           /efficiency-tools/db/tables
+POST           /efficiency-tools/db/table-schema
+POST           /efficiency-tools/server/ping
+POST           /efficiency-tools/server/port-check
+POST           /efficiency-tools/server/batch-port-check
+```
+
+### 三、前端新增页面入口
+
+| 导航分组 | 页面 |
+|---|---|
+| 数据看板 | `/dashboard` |
+| 项目工作流 | `/projects`、`/requirements`、`/hr-calendar`、`/hr/employees` |
+| 质量中心 | `/ai-testcase/generate`、`/ai-testcase/tasks`、`/test-cases`、`/test-cases/strategies`、`/api-automation/endpoints`、`/api-automation/executions`、`/performance/scenarios`、`/performance/reports`、`/efficiency/database`、`/efficiency/server` |
+| 缺陷管理 | `/defects`、`/defects/:id` |
+| 配置中心 | 原 AI 配置、角色配置、提示词、通知、生成行为、QA Skills 中心继续保留 |
+
+### 四、AI 用例生成链路增强
+
+- 提交生成任务时可选择 `project_id` 和 `requirement_id`，生成结果会带上项目/需求上下文。
+- 任务详情支持逐条标记“采纳 / 不采纳”，保存评审后只把采纳用例写入生成结果。
+- 采纳用例会同步沉淀到向量知识库和正式测试用例库，并记录创建/更新数量与用例 ID。
+- 任务详情新增表格 / 思维导图视图切换，支持 Excel、XMind、MS 同步和“采纳到用例库”操作。
+
+### 五、新增数据模型
+
+```text
+Project / ProjectVersion / ProjectMember
+Requirement / RequirementTrace / RequirementNodeMember
+Employee / Team / EmployeeSkill / Schedule / LeaveRecord
+TestCase / TestCaseStep
+TestExecution / TestExecutionResult / TestReport
+Defect / DefectComment / DefectAttachment / DefectHistory
+ApiEndpoint / ApiEnvironment / ApiTestCase / ApiTestStep / ApiExecution / ApiExecutionResult
+PerfScenario / PerfScript / PerfExecution / PerfResult / PerfBaseline
+```
+
+### 六、快速准备演示数据
+
+后端首次启动会自动建表并补齐兼容字段。如需填充项目、人员、需求和排期演示数据：
+
+```bash
+cd backend
+python3 -m seed_data
+```
+
+默认种子数据包含 1 个团队、7 名员工、3 个项目、6 条需求和 8 条排期记录。
+
+### 七、本轮依赖变化
+
+- 前端新增 CodeMirror 相关依赖，用于数据库 SQL 编辑体验。
+- 前端新增 `vuedraggable`，用于项目/需求列表拖拽排序。
+- 前端继续使用 `simple-mind-map` 展示和导出用例思维导图。
+- 后端新增 MySQL 连接能力依赖，用于效率工具中的数据库连接测试和 SQL 查询。
+
+---
+
 ## 本次版本改动总览（2026-04-22 第四轮 · QA Skills 工程化加固）
 
 > 主题：在第三轮 13 项增强的基础上做"工程化加固"——启动健康检查、真实 token 回填、独立审计表、Skill 依赖注入、Few-shot 智能选择、Discover 联合路由、Golden 回归、CLI 工具、前端可观测面板，共 **9 项二阶优化** 全部交付。
