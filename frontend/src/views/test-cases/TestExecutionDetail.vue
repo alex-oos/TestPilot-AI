@@ -113,31 +113,88 @@
 
       <!-- MindMap View -->
       <div v-if="viewMode === 'mindmap'" class="relative h-[calc(100vh-320px)] bg-white m-4 rounded-xl border border-gray-100 overflow-hidden">
-        <MindMapComponent v-if="mindMapData" :data="mindMapData" @node-click="handleMindMapNodeClick" />
+        <MindMapComponent v-if="mindMapData" :key="mindMapKey" :data="mindMapData" @node-click="handleMindMapNodeClick" />
         <div v-else class="h-full flex items-center justify-center text-gray-400">暂无关联用例</div>
-        <div
-          v-if="selectedMindMapResult"
-          class="absolute right-4 bottom-4 w-[360px] bg-white border border-gray-200 rounded-lg shadow-lg p-4"
-        >
-          <div class="flex items-start justify-between gap-3 mb-3">
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-gray-900 truncate">{{ selectedMindMapResult.test_case_title || `用例 #${selectedMindMapResult.test_case_id}` }}</p>
-              <p class="text-xs text-gray-500 mt-1">{{ selectedMindMapResult.test_case_module || '默认模块' }}</p>
-            </div>
-            <el-tag :type="resultStatusType(selectedMindMapResult.status)" size="small" effect="dark" round>
-              {{ resultStatusLabel(selectedMindMapResult.status) }}
-            </el-tag>
-          </div>
-          <div class="grid grid-cols-4 gap-2">
-            <el-button size="small" type="success" @click="openResultDialog(selectedMindMapResult, 'passed')">通过</el-button>
-            <el-button size="small" type="danger" @click="openResultDialog(selectedMindMapResult, 'failed')">失败</el-button>
-            <el-button size="small" color="#eab308" class="!text-white" @click="openResultDialog(selectedMindMapResult, 'blocked')">阻塞</el-button>
-            <el-button size="small" @click="openResultDialog(selectedMindMapResult, 'skipped')">跳过</el-button>
-          </div>
-          <el-button size="small" type="warning" plain class="!mt-3 !w-full" @click="openBugDialog(selectedMindMapResult)">
-            <el-icon class="mr-1"><Warning /></el-icon>提Bug
-          </el-button>
+
+        <!-- 提示条 -->
+        <div v-if="!selectedMindMapResult && results.length > 0" class="absolute left-1/2 bottom-4 -translate-x-1/2 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-lg px-4 py-2 text-xs shadow-sm pointer-events-none select-none">
+          💡 点击用例节点可执行测试用例
         </div>
+
+        <!-- 执行面板 -->
+        <transition name="slide-up">
+          <div
+            v-if="selectedMindMapResult"
+            class="absolute right-4 bottom-4 w-[380px] bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden"
+          >
+            <!-- Header -->
+            <div class="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-sm font-semibold text-gray-900 truncate">{{ selectedMindMapResult.test_case_title || `用例 #${selectedMindMapResult.test_case_id}` }}</span>
+                <el-tag :type="resultStatusType(selectedMindMapResult.status)" size="small" effect="dark" round>
+                  {{ resultStatusLabel(selectedMindMapResult.status) }}
+                </el-tag>
+              </div>
+              <button class="text-gray-400 hover:text-gray-600 text-lg leading-none" @click="selectedMindMapResult = null">&times;</button>
+            </div>
+            <!-- Body -->
+            <div class="p-4 space-y-3">
+              <p class="text-xs text-gray-500">模块: {{ selectedMindMapResult.test_case_module || '默认模块' }}</p>
+
+              <!-- 快速执行按钮 -->
+              <div class="grid grid-cols-4 gap-2">
+                <button
+                  class="px-0 py-1.5 rounded-lg text-xs font-medium transition-all border-2"
+                  :class="selectedMindMapResult.status === 'passed' ? 'bg-green-500 text-white border-green-500' : 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'"
+                  @click="quickExecute(selectedMindMapResult, 'passed')"
+                  :disabled="quickExecuting"
+                >✅ 通过</button>
+                <button
+                  class="px-0 py-1.5 rounded-lg text-xs font-medium transition-all border-2"
+                  :class="selectedMindMapResult.status === 'failed' ? 'bg-red-500 text-white border-red-500' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'"
+                  @click="quickExecute(selectedMindMapResult, 'failed')"
+                  :disabled="quickExecuting"
+                >❌ 失败</button>
+                <button
+                  class="px-0 py-1.5 rounded-lg text-xs font-medium transition-all border-2"
+                  :class="selectedMindMapResult.status === 'blocked' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100'"
+                  @click="quickExecute(selectedMindMapResult, 'blocked')"
+                  :disabled="quickExecuting"
+                >🚫 阻塞</button>
+                <button
+                  class="px-0 py-1.5 rounded-lg text-xs font-medium transition-all border-2"
+                  :class="selectedMindMapResult.status === 'skipped' ? 'bg-gray-500 text-white border-gray-500' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'"
+                  @click="quickExecute(selectedMindMapResult, 'skipped')"
+                  :disabled="quickExecuting"
+                >⏭ 跳过</button>
+              </div>
+
+              <!-- 填写详情 / 提Bug -->
+              <div class="flex gap-2">
+                <el-button size="small" class="!flex-1 !rounded-lg" @click="openResultDialog(selectedMindMapResult, selectedMindMapResult.status === 'pending' ? 'passed' : selectedMindMapResult.status)">
+                  <el-icon class="mr-1"><Document /></el-icon>填写详情
+                </el-button>
+                <el-button size="small" type="warning" plain class="!flex-1 !rounded-lg" @click="openBugDialog(selectedMindMapResult)">
+                  <el-icon class="mr-1"><Warning /></el-icon>提交Bug
+                </el-button>
+              </div>
+
+              <!-- 进度条 -->
+              <div class="pt-1 border-t border-gray-100">
+                <div class="flex justify-between text-[10px] text-gray-400 mb-1">
+                  <span>执行进度</span>
+                  <span>{{ executedCount }}/{{ results.length }}</span>
+                </div>
+                <div class="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
+                  <div class="h-full bg-green-500 transition-all" :style="{ width: passedPercent + '%' }"></div>
+                  <div class="h-full bg-red-500 transition-all" :style="{ width: failedPercent + '%' }"></div>
+                  <div class="h-full bg-yellow-400 transition-all" :style="{ width: blockedPercent + '%' }"></div>
+                  <div class="h-full bg-gray-400 transition-all" :style="{ width: skippedPercent + '%' }"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </transition>
       </div>
 
       <!-- Table View -->
@@ -361,11 +418,13 @@ const updatingResult = ref(false)
 const submittingBug = ref(false)
 const associating = ref(false)
 const savingExecutor = ref(false)
+const quickExecuting = ref(false)
 const resultDialogVisible = ref(false)
 const bugDialogVisible = ref(false)
 const associateDialogVisible = ref(false)
 const viewMode = ref<'table' | 'mindmap'>('mindmap')
 const activeTab = ref<'plan' | 'history' | 'changelog'>('plan')
+const mindMapKey = ref(0)
 
 const tabs = [
   { key: 'plan' as const, label: '测试规划' },
@@ -479,6 +538,28 @@ const mindMapData = computed<MindMapNode | null>(() => {
   }))
 
   return { content: `📋 ${execution.title || '测试策略'}`, children: moduleChildren }
+})
+
+const executedCount = computed(() => results.value.filter((r: any) => r.status && r.status !== 'pending').length)
+const passedPercent = computed(() => {
+  const total = results.value.length
+  if (!total) return 0
+  return (results.value.filter((r: any) => r.status === 'passed').length / total) * 100
+})
+const failedPercent = computed(() => {
+  const total = results.value.length
+  if (!total) return 0
+  return (results.value.filter((r: any) => r.status === 'failed').length / total) * 100
+})
+const blockedPercent = computed(() => {
+  const total = results.value.length
+  if (!total) return 0
+  return (results.value.filter((r: any) => r.status === 'blocked').length / total) * 100
+})
+const skippedPercent = computed(() => {
+  const total = results.value.length
+  if (!total) return 0
+  return (results.value.filter((r: any) => r.status === 'skipped').length / total) * 100
 })
 
 const execStatusType = (s?: string) => ({ pending: 'info', running: '', completed: 'success', aborted: 'danger' }[s || ''] || '') as any

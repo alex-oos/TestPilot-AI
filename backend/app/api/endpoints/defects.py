@@ -1,6 +1,7 @@
-import asyncio
+import os
+import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,22 @@ from app.models.defect_model import Defect, DefectComment, DefectHistory
 from app.util.time_utils import now_str
 
 router = APIRouter(prefix="/defects", tags=["Defects"])
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "uploads", "editor")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@router.post("/upload/image")
+async def upload_editor_image(file: UploadFile = File(...)):
+    """富文本编辑器内联图片上传"""
+    ext = os.path.splitext(file.filename or "")[1] or ".png"
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_name)
+    content = await file.read()
+    with open(file_path, "wb") as fp:
+        fp.write(content)
+    url = f"/uploads/editor/{unique_name}"
+    return {"errno": 0, "data": {"url": url}}
 
 
 @router.get("")
