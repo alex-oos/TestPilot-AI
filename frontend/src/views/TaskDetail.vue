@@ -246,6 +246,7 @@
                 <el-button size="small" @click="exportExcel" :loading="exporting.excel" class="!rounded-lg">📊 导出 Excel</el-button>
                 <el-button size="small" @click="exportXmind" :loading="exporting.xmind" class="!rounded-lg">🗺️ 导出 XMind</el-button>
                 <el-button size="small" type="primary" @click="syncMs" :loading="exporting.ms" class="!rounded-lg">🔗 同步 MS</el-button>
+                <el-button size="small" type="success" @click="adoptToLibrary" :loading="adopting" class="!rounded-lg">✅ 采纳到用例库</el-button>
               </div>
             </div>
 
@@ -465,8 +466,9 @@ import {
   syncCasesToMs,
   getTaskMindMapData,
 } from '../api/tasks'
+import { batchAdoptTestCases } from '../api/test-cases'
 import { updateTaskStatusInHistory } from '../utils/taskHistory'
-import type { TaskDetail, TestCase } from '../types'
+import type { ReviewResult, TaskDetail, TestCase } from '../types'
 
 const MindMap = defineAsyncComponent(() => import('../components/MindMap.vue'))
 
@@ -479,6 +481,7 @@ const taskId = route.params.id as string
 const activeTab = ref('cases')
 const viewMode = ref<'table' | 'mindmap'>('table')
 const exporting = ref({ excel: false, xmind: false, ms: false })
+const adopting = ref(false)
 const selectedStage = ref<PhaseKey>('analysis')
 const reviewEditableCases = ref<any[]>([])
 const savingReviewCases = ref(false)
@@ -758,7 +761,7 @@ const analysisSubSteps = computed<any[]>(() => {
   return data.sub_steps
 })
 
-const review = computed(() => {
+const review = computed<Partial<ReviewResult>>(() => {
   const data = task.value.phases?.review?.data
   if (data && typeof data === 'object') return data.review ?? {}
   return {}
@@ -1021,6 +1024,50 @@ async function syncMs() {
     ElMessage.error('同步失败')
   } finally {
     exporting.value.ms = false
+  }
+}
+
+async function adoptToLibrary() {
+  if (!cases.value.length) {
+    ElMessage.warning('没有可采纳的用例')
+    return
+  }
+  adopting.value = true
+  try {
+    const uploadData = task.value.phases?.upload?.data as any
+    const projectId = uploadData?.project_id || null
+    const requirementId = uploadData?.requirement_id || null
+
+    const payload = cases.value.map((c: any) => ({
+      title: c.title,
+      module: c.module || '默认模块',
+      priority: c.priority || 'medium',
+      case_type: c.case_type || 'functional',
+      precondition: c.precondition || '',
+      description: c.expected_result || '',
+      source: 'ai',
+      task_id: taskId,
+      project_id: projectId,
+      requirement_id: requirementId,
+      steps: typeof c.steps === 'string'
+        ? [{ order: 1, action: c.steps, expected_result: c.expected_result || '' }]
+        : (c.steps || []).map((s: any, i: number) => ({
+            order: i + 1,
+            action: typeof s === 'string' ? s : (s.action || s.step || ''),
+            expected_result: typeof s === 'string' ? '' : (s.expected_result || s.expected || ''),
+            test_data: typeof s === 'string' ? '' : (s.test_data || ''),
+          })),
+    }))
+    const resp = await batchAdoptTestCases({ cases: payload })
+    if (resp.data?.code === 0) {
+      ElMessage.success(`成功采纳 ${resp.data.data.count} 条用例到用例库`)
+    } else {
+      ElMessage.error(resp.data?.msg || '采纳失败')
+    }
+  } catch {
+    ElMessage.error('采纳到用例库失败')
+  } finally {
+    adopting.value = false
   }
 }
 

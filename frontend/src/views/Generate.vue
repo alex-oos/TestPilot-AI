@@ -66,7 +66,7 @@
                   <label class="manual-label">关联项目（可选）</label>
                   <el-input
                     v-model="genForm.relatedProject"
-                    placeholder="请输入关联项目名称，如：AI 测试平台"
+                    placeholder="请输入关联项目名称，如：月亮邮寄员平台"
                     size="large"
                   />
                 </div>
@@ -112,6 +112,44 @@
           </transition>
         </div>
 
+        <!-- Requirement & Project Association -->
+        <div class="grid grid-cols-2 gap-6 mb-8">
+          <el-form-item label="关联项目">
+            <el-select
+              v-model="genForm.project_id"
+              clearable
+              placeholder="选择项目（可选）"
+              size="large"
+              class="w-full"
+              @change="onProjectChange"
+            >
+              <el-option
+                v-for="p in projectOptions"
+                :key="p.id"
+                :label="p.name"
+                :value="p.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="关联需求">
+            <el-select
+              v-model="genForm.requirement_id"
+              clearable
+              filterable
+              placeholder="选择需求（推荐）"
+              size="large"
+              class="w-full"
+            >
+              <el-option
+                v-for="r in requirementOptions"
+                :key="r.id"
+                :label="`[${r.id}] ${r.title}`"
+                :value="r.id"
+              />
+            </el-select>
+          </el-form-item>
+        </div>
+
         <!-- Submit Button -->
         <div class="flex justify-end">
           <el-button
@@ -139,22 +177,54 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { addTaskToHistory } from '../utils/taskHistory'
 import { createTask } from '../api/generate'
+import { getProjects } from '../api/projects'
+import { getRequirements } from '../api/requirements'
 
 const router = useRouter()
 const isSubmitting = ref(false)
 const selectedFile = ref<File | null>(null)
+const projectOptions = ref<any[]>([])
+const requirementOptions = ref<any[]>([])
 
 const genForm = reactive({
   sourceType: 'feishu',
   docUrl: '',
   manualTitle: '',
   manualDescription: '',
-  relatedProject: ''
+  relatedProject: '',
+  project_id: null as number | null,
+  requirement_id: null as number | null,
+})
+
+async function fetchProjects() {
+  try {
+    const res = await getProjects({ page: 1, page_size: 100 })
+    projectOptions.value = res.data?.data?.items || []
+  } catch {}
+}
+
+async function fetchRequirements(projectId?: number | null) {
+  try {
+    const params: any = { page: 1, page_size: 200 }
+    if (projectId) params.project_id = projectId
+    const res = await getRequirements(params)
+    requirementOptions.value = res.data?.data?.items || []
+  } catch {}
+}
+
+function onProjectChange(val: number | null) {
+  genForm.requirement_id = null
+  fetchRequirements(val)
+}
+
+onMounted(() => {
+  fetchProjects()
+  fetchRequirements()
 })
 
 const handleFileChange = (file: any) => {
@@ -187,6 +257,12 @@ const submit = async () => {
     const formData = new FormData()
     formData.append('source_type', genForm.sourceType)
     formData.append('submitter', localStorage.getItem('username') || 'admin')
+    if (genForm.project_id) {
+      formData.append('project_id', String(genForm.project_id))
+    }
+    if (genForm.requirement_id) {
+      formData.append('requirement_id', String(genForm.requirement_id))
+    }
     if (genForm.sourceType === 'manual') {
       formData.append('manual_title', genForm.manualTitle.trim())
       formData.append('manual_description', genForm.manualDescription.trim())
