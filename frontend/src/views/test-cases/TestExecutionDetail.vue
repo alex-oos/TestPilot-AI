@@ -585,6 +585,27 @@ function handleMindMapNodeClick(node: MindMapNode) {
   selectedMindMapResult.value = results.value.find((r: any) => String(r.id) === node.payload?.id) || null
 }
 
+async function quickExecute(row: any, status: string) {
+  if (row.status === status) return
+  quickExecuting.value = true
+  try {
+    await updateExecutionResult(execId, row.id, {
+      status,
+      actual_result: row.actual_result || '',
+      notes: '',
+      executor_id: execution.executor_id,
+    })
+    ElMessage.success(`已标记为「${resultStatusLabel(status)}」`)
+    await fetchDetail()
+    selectedMindMapResult.value = results.value.find((r: any) => r.id === row.id) || null
+    mindMapKey.value++
+  } catch (e: any) {
+    ElMessage.error(e.message || '操作失败')
+  } finally {
+    quickExecuting.value = false
+  }
+}
+
 function openBugDialog(row: any) {
   const caseTitle = row.test_case_title || `用例 #${row.test_case_id}`
   bugForm.title = `[${caseTitle}] `
@@ -652,6 +673,7 @@ async function submitResult() {
     resultDialogVisible.value = false
     await fetchDetail()
     selectedMindMapResult.value = results.value.find((r: any) => r.id === resultForm.resultId) || null
+    mindMapKey.value++
   } catch (e: any) {
     ElMessage.error(e.message || '更新失败')
   } finally {
@@ -775,3 +797,15 @@ onMounted(async () => {
   pageLoading.value = false
 })
 </script>
+
+<style scoped>
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.25s ease;
+}
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(16px);
+}
+</style>
