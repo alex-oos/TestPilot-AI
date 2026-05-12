@@ -24,6 +24,8 @@ export interface TestCase {
   steps: string
   expected_result: string
   priority: '高' | '中' | '低'
+  case_type?: string
+  test_data?: string
   adoption_status?: 'accepted' | 'rejected'
 }
 
@@ -53,10 +55,12 @@ export interface TaskDetail {
   error: string | null
   mindmap: unknown
   phases: {
+    upload?: TaskPhase
+    manual_review?: TaskPhase
     analysis: TaskPhase
     generation: TaskPhase
     review: TaskPhase
-  }
+  } & Record<string, TaskPhase | undefined>
 }
 
 export interface AIModelConfig {
