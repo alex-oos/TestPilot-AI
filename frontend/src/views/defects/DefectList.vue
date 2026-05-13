@@ -5,7 +5,7 @@
         <h1 class="text-3xl font-bold text-gray-900 mb-2">缺陷管理</h1>
         <p class="text-gray-500">跟踪和管理项目中的所有缺陷，支持多维度筛选。</p>
       </div>
-      <el-button type="primary" color="#4f46e5" class="!rounded-xl" @click="openDialog()">
+      <el-button type="primary" color="#4f46e5" class="!rounded-xl" @click="router.push('/defects/create')">
         + 新建缺陷
       </el-button>
     </div>
@@ -59,7 +59,7 @@
         </el-table-column>
         <el-table-column label="操作" width="150" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click.stop="openDialog(row)">编辑</el-button>
+            <el-button link type="primary" size="small" @click.stop="router.push(`/defects/${row.id}/edit`)">编辑</el-button>
             <el-popconfirm title="确认删除该缺陷？" @confirm="handleDelete(row.id)">
               <template #reference>
                 <el-button link type="danger" size="small" @click.stop>删除</el-button>

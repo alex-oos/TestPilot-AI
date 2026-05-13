@@ -10,7 +10,7 @@ class TestCase(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     requirement_id: Mapped[Optional[int]] = mapped_column(ForeignKey("requirements.id"), nullable=True, index=True)
-    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     title: Mapped[str] = mapped_column(String, index=True)
     module: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     priority: Mapped[str] = mapped_column(String, default="medium")

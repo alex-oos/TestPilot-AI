@@ -76,13 +76,20 @@ const hasUnsavedChanges = ref(false)
 let mindMapInstance: any = null
 
 const convertData = (node: MindMapNode): any => {
-  return {
+  const result: any = {
     data: {
       text: node.content,
       ...node.payload
     },
     children: node.children ? node.children.map(child => convertData(child)) : []
   }
+
+  if (node.payload?.type === 'execution-result' && node.payload.color) {
+    result.data.borderColor = node.payload.color
+    result.data.borderWidth = 2
+  }
+
+  return result
 }
 
 const convertBack = (node: any): MindMapNode => {

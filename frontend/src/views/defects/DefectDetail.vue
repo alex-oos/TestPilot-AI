@@ -8,8 +8,8 @@
         <h1 class="text-2xl font-bold text-gray-900 truncate">{{ defect.title || '缺陷详情' }}</h1>
         <p class="text-gray-400 text-sm mt-0.5">ID: {{ defect.id }}</p>
       </div>
-      <el-button type="primary" color="#4f46e5" class="!rounded-xl" @click="editMode = !editMode">
-        {{ editMode ? '取消编辑' : '编辑' }}
+      <el-button type="primary" color="#4f46e5" class="!rounded-xl" @click="router.push(`/defects/${defect.id}/edit`)">
+        编辑
       </el-button>
     </div>
 

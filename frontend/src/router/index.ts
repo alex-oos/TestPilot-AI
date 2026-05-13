@@ -148,6 +148,16 @@ const routes: Array<RouteRecordRaw> = [
         component: () => import('../views/defects/DefectList.vue')
       },
       {
+        path: 'defects/create',
+        name: 'DefectCreate',
+        component: () => import('../views/defects/DefectForm.vue')
+      },
+      {
+        path: 'defects/:id/edit',
+        name: 'DefectEdit',
+        component: () => import('../views/defects/DefectForm.vue')
+      },
+      {
         path: 'defects/:id',
         name: 'DefectDetail',
         component: () => import('../views/defects/DefectDetail.vue')
