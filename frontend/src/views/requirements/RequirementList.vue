@@ -351,7 +351,7 @@ async function advanceStage(req: any, newStatus: string) {
 }
 
 function priorityLabel(p: string) { return { critical: '紧急', high: '高', medium: '中', low: '低' }[p] || p }
-function priorityType(p: string) { return ({ critical: 'danger', high: 'warning', medium: '', low: 'info' } as any)[p] || '' }
+function priorityType(p: string) { return ({ critical: 'danger', high: 'warning', medium: 'primary', low: 'info' } as any)[p] || 'info' }
 function projectName(id: any) { return projectOptions.value.find(p => p.value === id)?.label || '' }
 function goProject(id: any) { router.push(`/projects/${id}`) }
 function formatTime(v: string) { if (!v) return '--'; const d = new Date(v); return isNaN(d.getTime()) ? '--' : d.toLocaleString('zh-CN') }

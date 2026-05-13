@@ -915,7 +915,7 @@ async function submitSchedule() {
 
 // ---- Helpers ----
 function priorityLabel(p: string) { return { critical: '紧急', high: '高', medium: '中', low: '低' }[p] || p }
-function priorityType(p: string) { return ({ critical: 'danger', high: 'warning', medium: '', low: 'info' } as any)[p] || '' }
+function priorityType(p: string) { return ({ critical: 'danger', high: 'warning', medium: 'primary', low: 'info' } as any)[p] || 'info' }
 
 // ---- Init ----
 onMounted(() => { fetchProject(); fetchRequirements(); fetchVersions(); fetchMembers(); fetchAllEmployees(); fetchSchedules() })

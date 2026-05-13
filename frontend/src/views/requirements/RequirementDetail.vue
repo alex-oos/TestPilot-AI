@@ -326,7 +326,7 @@ function priorityLabel(p: string) {
   return { critical: '紧急', high: '高', medium: '中', low: '低' }[p] || p
 }
 function priorityType(p: string) {
-  return ({ critical: 'danger', high: 'warning', medium: '', low: 'info' } as any)[p] || ''
+  return ({ critical: 'danger', high: 'warning', medium: 'primary', low: 'info' } as any)[p] || 'info'
 }
 
 function scrollToNode(nodeVal: string) {
