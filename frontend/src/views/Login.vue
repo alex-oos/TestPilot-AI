@@ -130,7 +130,7 @@ const handleLogin = async () => {
     }
 
     ElMessage.success('登录成功！')
-    router.push('/tasks')
+    router.push('/dashboard')
   } catch (error: any) {
     if (error?.response?.status === 502 || !error?.response) {
       ElMessage.error('登录失败：后端服务不可达，请检查后端是否已启动（127.0.0.1:8001）')
