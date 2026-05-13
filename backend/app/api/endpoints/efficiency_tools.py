@@ -1,4 +1,5 @@
 import asyncio
+import re
 import socket
 from typing import Optional, List
 
@@ -10,6 +11,72 @@ from app.ai.llm import llm_client
 from app.core.response import success, fail
 
 router = APIRouter(prefix="/efficiency-tools", tags=["Efficiency Tools"])
+
+# ---------------------------------------------------------------------------
+#  Security: command / SQL safety
+# ---------------------------------------------------------------------------
+
+_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_.]*$')
+
+
+def _safe_identifier(name: str) -> str:
+    """校验 SQL 标识符，防止注入"""
+    if not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"非法标识符: {name}")
+    return name
+
+
+SAFE_CMD_PREFIXES = (
+    "ls", "ll", "cat", "tail", "head", "grep", "egrep", "fgrep",
+    "find", "wc", "sort", "uniq", "awk", "sed", "cut", "tr",
+    "df", "du", "free", "vmstat", "iostat", "sar", "mpstat",
+    "ps", "top", "htop", "pgrep", "lsof",
+    "uname", "whoami", "hostname", "uptime", "date", "id", "env", "printenv",
+    "ip", "ifconfig", "ss", "netstat", "ping", "traceroute", "dig", "nslookup", "curl",
+    "docker ps", "docker logs", "docker inspect", "docker images", "docker stats",
+    "systemctl status", "systemctl is-active", "systemctl list-units",
+    "journalctl", "dmesg",
+    "rpm", "dpkg", "apt list", "yum list",
+    "file", "stat", "readlink", "which", "whereis", "type",
+    "last", "w", "who",
+)
+
+DANGEROUS_PATTERNS = (
+    "rm ", "rm\t", "rmdir", "mkfs", "dd ", "shutdown", "reboot", "poweroff", "halt",
+    "kill ", "kill\t", "killall", "pkill",
+    "chmod ", "chmod\t", "chown ", "chown\t",
+    "> /dev/", ":(){ ", "fork",
+    "wget ", "wget\t", "curl.*|.*sh", "curl.*|.*bash",
+    "mv ", "mv\t", "cp ", "cp\t",
+    "mkfs", "fdisk", "parted", "mount ", "umount ",
+    "useradd", "userdel", "usermod", "passwd",
+    "iptables", "nft ", "firewall-cmd",
+    "systemctl start", "systemctl stop", "systemctl restart", "systemctl enable", "systemctl disable",
+    "service ", "update-rc.d",
+    "echo ", "printf ", "tee ",
+    "crontab ", "at ",
+    "perl ", "python ", "python3 ", "ruby ", "node ", "bash ", "sh ",
+    "/bin/rm", "/usr/bin/rm",
+    "find.*-delete", "find.*-exec",
+    "xargs",
+)
+
+
+def _is_safe_command(cmd: str) -> bool:
+    """白名单检查：只允许已知安全的命令前缀"""
+    first_segment = cmd.strip().split("|")[0].strip()
+    base_cmd = first_segment.split()[0] if first_segment.split() else ""
+    base_cmd = base_cmd.rsplit("/", 1)[-1]
+    return any(first_segment.startswith(p) or base_cmd == p.split()[0] for p in SAFE_CMD_PREFIXES)
+
+
+def _has_dangerous_pattern(cmd: str) -> Optional[str]:
+    """黑名单检查：检测是否包含危险操作模式"""
+    lower = cmd.lower()
+    for p in DANGEROUS_PATTERNS:
+        if p in lower:
+            return p.strip()
+    return None
 
 # ---------------------------------------------------------------------------
 #  Pydantic models
@@ -108,22 +175,31 @@ def _show_tables_sql(db_type: str) -> str:
     return "SHOW TABLES"
 
 
-def _describe_table_sql(db_type: str, table: str) -> str:
+def _describe_table_sql(db_type: str, table: str) -> tuple:
+    """返回 (sql, params) 元组，使用参数化查询防注入"""
+    _safe_identifier(table)
     if db_type == "postgresql":
         return (
-            f"SELECT column_name, data_type, is_nullable, column_default "
-            f"FROM information_schema.columns "
-            f"WHERE table_schema = 'public' AND table_name = '{table}' "
-            f"ORDER BY ordinal_position"
+            "SELECT column_name, data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "ORDER BY ordinal_position",
+            (table,),
         )
-    return f"DESCRIBE `{table}`"
+    return f"DESCRIBE `{table}`", ()
 
 
 BLOCKED_KEYWORDS = {"insert", "update", "delete", "drop", "alter", "create", "truncate", "grant", "revoke"}
 
 
 def _is_readonly(sql: str) -> bool:
-    first_word = sql.strip().split()[0].lower() if sql.strip() else ""
+    normalized = re.sub(r'/\*.*?\*/', ' ', sql, flags=re.DOTALL)
+    normalized = re.sub(r'--[^\n]*', ' ', normalized)
+    tokens = normalized.lower().split()
+    blocked_found = BLOCKED_KEYWORDS.intersection(tokens)
+    if blocked_found:
+        return False
+    first_word = tokens[0] if tokens else ""
     return first_word not in BLOCKED_KEYWORDS
 
 
@@ -174,10 +250,15 @@ async def list_db_tables(body: DBConnectRequest, request: Request):
 async def get_table_schema(body: DBQueryRequest, request: Request):
     table_name = body.sql.strip()
     try:
+        _safe_identifier(table_name)
+    except ValueError:
+        return fail("非法表名", tid=request.state.tid)
+    try:
         cfg = DBConnectRequest(**{k: getattr(body, k) for k in DBConnectRequest.model_fields})
         conn = await asyncio.to_thread(_get_connection, cfg)
         cursor = conn.cursor()
-        cursor.execute(_describe_table_sql(body.db_type, table_name))
+        sql, params = _describe_table_sql(body.db_type, table_name)
+        cursor.execute(sql, params) if params else cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         cursor.close()
@@ -229,7 +310,8 @@ async def ai_query(body: AIQueryRequest, request: Request):
         schema_parts: list[str] = []
         for t in tables[:30]:
             try:
-                cursor.execute(_describe_table_sql(body.db_type, t))
+                sql, params = _describe_table_sql(body.db_type, t)
+                cursor.execute(sql, params) if params else cursor.execute(sql)
                 cols = cursor.fetchall()
                 col_descs = ", ".join(f"{c[0]} {c[1]}" for c in cols)
                 schema_parts.append(f"  {t}({col_descs})")
@@ -383,6 +465,9 @@ def _ssh_exec(cfg: SSHCommandRequest) -> dict:
 
 @router.post("/server/ssh-exec")
 async def ssh_execute(body: SSHCommandRequest, request: Request):
+    danger = _has_dangerous_pattern(body.command)
+    if danger:
+        return fail(f"安全限制：命令包含危险操作 ({danger})，已被拦截", tid=request.state.tid)
     try:
         result = await asyncio.to_thread(_ssh_exec, body)
         return success(result, request.state.tid)
@@ -438,15 +523,20 @@ async def ai_server_command(body: AIServerRequest, request: Request):
         if generated_cmd.lower().startswith("bash") or generated_cmd.lower().startswith("shell"):
             generated_cmd = generated_cmd.split("\n", 1)[-1].strip()
 
-        dangerous = ["rm ", "rm\t", "rmdir", "mkfs", "dd ", "shutdown", "reboot",
-                      "kill -9", "chmod 777", "chown", "> /dev/", ":(){ ", "fork"]
-        for d in dangerous:
-            if d in generated_cmd.lower():
-                return success({
-                    "generated_command": generated_cmd,
-                    "executed": False,
-                    "error": f"AI 生成的命令包含危险操作 ({d.strip()})，已被拦截",
-                }, request.state.tid)
+        danger = _has_dangerous_pattern(generated_cmd)
+        if danger:
+            return success({
+                "generated_command": generated_cmd,
+                "executed": False,
+                "error": f"AI 生成的命令包含危险操作 ({danger})，已被拦截",
+            }, request.state.tid)
+
+        if not _is_safe_command(generated_cmd):
+            return success({
+                "generated_command": generated_cmd,
+                "executed": False,
+                "error": "AI 生成的命令不在安全白名单中，请检查后手动执行",
+            }, request.state.tid)
 
         ssh_cfg = SSHCommandRequest(
             host=body.host, port=body.port, username=body.username,
