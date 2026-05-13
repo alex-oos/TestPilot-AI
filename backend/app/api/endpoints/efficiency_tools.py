@@ -63,11 +63,17 @@ DANGEROUS_PATTERNS = (
 
 
 def _is_safe_command(cmd: str) -> bool:
-    """白名单检查：只允许已知安全的命令前缀"""
-    first_segment = cmd.strip().split("|")[0].strip()
-    base_cmd = first_segment.split()[0] if first_segment.split() else ""
-    base_cmd = base_cmd.rsplit("/", 1)[-1]
-    return any(first_segment.startswith(p) or base_cmd == p.split()[0] for p in SAFE_CMD_PREFIXES)
+    """白名单检查：管道中每一段都必须以安全命令开头"""
+    segments = cmd.strip().split("|")
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        base_cmd = segment.split()[0] if segment.split() else ""
+        base_cmd = base_cmd.rsplit("/", 1)[-1]
+        if not any(segment.startswith(p) or base_cmd == p.split()[0] for p in SAFE_CMD_PREFIXES):
+            return False
+    return True
 
 
 def _has_dangerous_pattern(cmd: str) -> Optional[str]:
@@ -209,6 +215,7 @@ def _is_readonly(sql: str) -> bool:
 
 @router.post("/db/test-connect")
 async def test_db_connection(body: DBConnectRequest, request: Request):
+    conn = None
     try:
         conn = await asyncio.to_thread(_get_connection, body)
         cursor = conn.cursor()
@@ -224,26 +231,31 @@ async def test_db_connection(body: DBConnectRequest, request: Request):
             databases = [row[0] for row in cursor.fetchall()]
 
         cursor.close()
-        conn.close()
         return success({"connected": True, "version": version, "databases": databases}, request.state.tid)
     except Exception as e:
         return fail(f"连接失败: {str(e)}", tid=request.state.tid)
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.post("/db/tables")
 async def list_db_tables(body: DBConnectRequest, request: Request):
     if not body.database:
         return fail("请指定数据库名称", tid=request.state.tid)
+    conn = None
     try:
         conn = await asyncio.to_thread(_get_connection, body)
         cursor = conn.cursor()
         cursor.execute(_show_tables_sql(body.db_type))
         tables = [row[0] for row in cursor.fetchall()]
         cursor.close()
-        conn.close()
         return success({"tables": tables}, request.state.tid)
     except Exception as e:
         return fail(f"获取表列表失败: {str(e)}", tid=request.state.tid)
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.post("/db/table-schema")
@@ -253,6 +265,7 @@ async def get_table_schema(body: DBQueryRequest, request: Request):
         _safe_identifier(table_name)
     except ValueError:
         return fail("非法表名", tid=request.state.tid)
+    conn = None
     try:
         cfg = DBConnectRequest(**{k: getattr(body, k) for k in DBConnectRequest.model_fields})
         conn = await asyncio.to_thread(_get_connection, cfg)
@@ -262,10 +275,12 @@ async def get_table_schema(body: DBQueryRequest, request: Request):
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         cursor.close()
-        conn.close()
         return success({"columns": columns, "rows": [list(r) for r in rows]}, request.state.tid)
     except Exception as e:
         return fail(f"获取表结构失败: {str(e)}", tid=request.state.tid)
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.post("/db/query")
@@ -273,6 +288,7 @@ async def execute_db_query(body: DBQueryRequest, request: Request):
     sql = body.sql.strip()
     if not _is_readonly(sql):
         return fail("安全限制：仅允许 SELECT / SHOW / DESCRIBE / EXPLAIN 语句", tid=request.state.tid)
+    conn = None
     try:
         cfg = DBConnectRequest(**{k: getattr(body, k) for k in DBConnectRequest.model_fields})
         conn = await asyncio.to_thread(_get_connection, cfg)
@@ -282,7 +298,6 @@ async def execute_db_query(body: DBQueryRequest, request: Request):
         rows = cursor.fetchmany(500)
         total = cursor.rowcount
         cursor.close()
-        conn.close()
         return success({
             "columns": columns,
             "rows": [list(r) for r in rows],
@@ -291,6 +306,9 @@ async def execute_db_query(body: DBQueryRequest, request: Request):
         }, request.state.tid)
     except Exception as e:
         return fail(f"查询失败: {str(e)}", tid=request.state.tid)
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +318,8 @@ async def execute_db_query(body: DBQueryRequest, request: Request):
 @router.post("/db/ai-query")
 async def ai_query(body: AIQueryRequest, request: Request):
     """用自然语言描述需求，AI 生成 SQL 并执行"""
+    conn = None
+    conn2 = None
     try:
         cfg = DBConnectRequest(**{k: getattr(body, k) for k in DBConnectRequest.model_fields})
         conn = await asyncio.to_thread(_get_connection, cfg)
@@ -319,6 +339,7 @@ async def ai_query(body: AIQueryRequest, request: Request):
                 schema_parts.append(f"  {t}(...)")
         cursor.close()
         conn.close()
+        conn = None
 
         schema_text = "\n".join(schema_parts) if schema_parts else "(no tables)"
         db_type_label = "PostgreSQL" if body.db_type == "postgresql" else "MySQL"
@@ -362,7 +383,6 @@ async def ai_query(body: AIQueryRequest, request: Request):
         rows = cursor2.fetchmany(500)
         total = cursor2.rowcount
         cursor2.close()
-        conn2.close()
 
         return success({
             "generated_sql": generated_sql,
@@ -376,6 +396,11 @@ async def ai_query(body: AIQueryRequest, request: Request):
     except Exception as e:
         logger.error(f"AI query error: {e}")
         return fail(f"AI 查询失败: {str(e)}", tid=request.state.tid)
+    finally:
+        if conn:
+            conn.close()
+        if conn2:
+            conn2.close()
 
 
 # ---------------------------------------------------------------------------

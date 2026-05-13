@@ -56,13 +56,6 @@ const routes: Array<RouteRecordRaw> = [
       },
 
       // ---- 质量中心 ----
-      // 测试用例管理
-      {
-        path: 'test-cases',
-        name: 'TestCaseList',
-        component: () => import('../views/test-cases/TestCaseList.vue')
-      },
-
       // AI 测试用例
       {
         path: 'ai-testcase/generate',

@@ -97,7 +97,7 @@
         <template v-else>
           <button
             class="nav-item w-full justify-between"
-            :class="(isTesterActive || isActive('/defects')) && 'nav-active'"
+            :class="isTesterActive && 'nav-active'"
             @click="toggleMenu('tester')"
           >
             <div class="flex items-center gap-3">
@@ -255,7 +255,8 @@
             <template v-for="(crumb, idx) in breadcrumbs" :key="idx">
               <span class="mx-1.5 text-slate-300">/</span>
               <span v-if="idx === breadcrumbs.length - 1" class="text-slate-800 font-medium">{{ crumb.label }}</span>
-              <router-link v-else :to="crumb.path" class="hover:text-indigo-600 transition-colors">{{ crumb.label }}</router-link>
+              <router-link v-else-if="crumb.path" :to="crumb.path" class="hover:text-indigo-600 transition-colors">{{ crumb.label }}</router-link>
+              <span v-else class="text-slate-500">{{ crumb.label }}</span>
             </template>
           </nav>
         </div>
@@ -324,7 +325,7 @@ watch(searchActive, (v) => {
   if (v) nextTick(() => searchInputRef.value?.focus())
 })
 
-const _isTesterPath = (p: string) => p.startsWith('/ai-testcase') || p.startsWith('/test-cases') || p.startsWith('/api-automation') || p.startsWith('/performance') || p.startsWith('/efficiency')
+const _isTesterPath = (p: string) => p.startsWith('/ai-testcase') || p.startsWith('/test-cases') || p.startsWith('/api-automation') || p.startsWith('/performance') || p.startsWith('/efficiency') || p.startsWith('/defects')
 
 const openMenus = reactive({
   workflow: route.path.startsWith('/projects') || route.path.startsWith('/requirements') || route.path.startsWith('/hr-calendar') || route.path.startsWith('/hr/'),
@@ -355,10 +356,10 @@ const toggleMenu = (key: keyof typeof openMenus) => {
 
 const breadcrumbMap: Record<string, { label: string; path?: string }[]> = {
   '/dashboard': [{ label: '数据看板' }],
-  '/projects': [{ label: '项目工作流', path: '/projects' }, { label: '项目管理' }],
-  '/requirements': [{ label: '项目工作流', path: '/requirements' }, { label: '需求管理' }],
-  '/hr-calendar': [{ label: '项目工作流', path: '/hr-calendar' }, { label: '人力排期' }],
-  '/hr/employees': [{ label: '项目工作流', path: '/hr/employees' }, { label: '人力管理' }],
+  '/projects': [{ label: '项目工作流' }, { label: '项目管理' }],
+  '/requirements': [{ label: '项目工作流' }, { label: '需求管理' }],
+  '/hr-calendar': [{ label: '项目工作流' }, { label: '人力排期' }],
+  '/hr/employees': [{ label: '项目工作流' }, { label: '人力管理' }],
   '/ai-testcase/generate': [{ label: '质量中心' }, { label: '用例生成' }],
   '/ai-testcase/tasks': [{ label: '质量中心' }, { label: '生成任务' }],
   '/test-cases': [{ label: '质量中心' }, { label: '用例管理' }],
@@ -381,8 +382,8 @@ const breadcrumbMap: Record<string, { label: string; path?: string }[]> = {
 const breadcrumbs = computed(() => {
   const path = route.path
   if (breadcrumbMap[path]) return breadcrumbMap[path]
-  if (path.startsWith('/projects/')) return [{ label: '项目工作流', path: '/projects' }, { label: '项目管理', path: '/projects' }, { label: '项目详情' }]
-  if (path.startsWith('/requirements/')) return [{ label: '项目工作流', path: '/requirements' }, { label: '需求管理', path: '/requirements' }, { label: '需求详情' }]
+  if (path.startsWith('/projects/')) return [{ label: '项目工作流' }, { label: '项目管理', path: '/projects' }, { label: '项目详情' }]
+  if (path.startsWith('/requirements/')) return [{ label: '项目工作流' }, { label: '需求管理', path: '/requirements' }, { label: '需求详情' }]
   if (path.startsWith('/defects/')) return [{ label: '质量中心' }, { label: '缺陷管理', path: '/defects' }, { label: '缺陷详情' }]
   if (path.startsWith('/test-cases/')) return [{ label: '质量中心' }, { label: '用例管理', path: '/test-cases' }, { label: '详情' }]
   if (path.startsWith('/ai-testcase/task/')) return [{ label: '质量中心' }, { label: '生成任务', path: '/ai-testcase/tasks' }, { label: '任务详情' }]
