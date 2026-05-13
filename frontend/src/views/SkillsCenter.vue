@@ -63,9 +63,9 @@
       <el-tab-pane label="Skill 列表" name="skills">
         <div style="margin-bottom: 8px">
           <el-radio-group v-model="langFilter" size="small" @change="loadList(false)">
-            <el-radio-button label="">全部</el-radio-button>
-            <el-radio-button label="zh">中文</el-radio-button>
-            <el-radio-button label="en">English</el-radio-button>
+            <el-radio-button value="">全部</el-radio-button>
+            <el-radio-button value="zh">中文</el-radio-button>
+            <el-radio-button value="en">English</el-radio-button>
           </el-radio-group>
         </div>
         <el-table :data="summary?.skills || []" size="small" border @row-click="onRowClick">

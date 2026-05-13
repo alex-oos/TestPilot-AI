@@ -12,22 +12,22 @@
         <!-- Source Selection -->
         <el-form-item label="需求来源文档">
           <el-radio-group v-model="genForm.sourceType" class="mt-2 w-full flex-wrap gap-4">
-            <el-radio-button label="feishu" class="flex-grow flex-1 text-center">
+            <el-radio-button value="feishu" class="flex-grow flex-1 text-center">
               <div class="py-2 flex items-center justify-center gap-2">
                 <span>📄</span> 飞书文档
               </div>
             </el-radio-button>
-            <el-radio-button label="dingtalk" class="flex-grow flex-1 text-center">
+            <el-radio-button value="dingtalk" class="flex-grow flex-1 text-center">
               <div class="py-2 flex items-center justify-center gap-2">
                 <span>💬</span> 钉钉文档
               </div>
             </el-radio-button>
-            <el-radio-button label="manual" class="flex-grow flex-1 text-center">
+            <el-radio-button value="manual" class="flex-grow flex-1 text-center">
               <div class="py-2 flex items-center justify-center gap-2">
                 <span>✍️</span> 手动输入需求描述
               </div>
             </el-radio-button>
-            <el-radio-button label="local" class="flex-grow flex-1 text-center">
+            <el-radio-button value="local" class="flex-grow flex-1 text-center">
               <div class="py-2 flex items-center justify-center gap-2">
                 <span>📁</span> 本地文件上传
               </div>
