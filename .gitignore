@@ -67,3 +67,4 @@ chroma_db/
 
 # Temporary output files
 output.png
+.gstack/
