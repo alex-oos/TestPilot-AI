@@ -7,6 +7,7 @@ ROLE_GENERATION = "generation"
 ROLE_REVIEW = "review"
 ROLE_SUPPLEMENT = "supplement"
 ROLE_DISCOVER = "discover"
+ROLE_STRATEGY = "strategy"
 
 
 DEFAULT_SKILL_FOR_ROLE: dict[str, str] = {
@@ -15,4 +16,5 @@ DEFAULT_SKILL_FOR_ROLE: dict[str, str] = {
     ROLE_REVIEW: "test-case-reviewer-plus",
     ROLE_SUPPLEMENT: "testcase-writer-plus",
     ROLE_DISCOVER: "discover-testing",
+    ROLE_STRATEGY: "test-strategy-plus",
 }

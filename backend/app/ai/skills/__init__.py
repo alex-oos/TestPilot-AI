@@ -14,6 +14,7 @@ from app.ai.skills.builder import (
     build_analysis_messages,
     build_generation_messages,
     build_review_messages,
+    build_strategy_messages,
     build_supplement_messages,
 )
 from app.ai.skills.catalog import (
@@ -22,6 +23,7 @@ from app.ai.skills.catalog import (
     ROLE_DISCOVER,
     ROLE_GENERATION,
     ROLE_REVIEW,
+    ROLE_STRATEGY,
     ROLE_SUPPLEMENT,
 )
 from app.ai.skills.loader import (
@@ -39,12 +41,14 @@ __all__ = [
     "build_analysis_messages",
     "build_generation_messages",
     "build_review_messages",
+    "build_strategy_messages",
     "build_supplement_messages",
     "DEFAULT_SKILL_FOR_ROLE",
     "ROLE_ANALYSIS",
     "ROLE_DISCOVER",
     "ROLE_GENERATION",
     "ROLE_REVIEW",
+    "ROLE_STRATEGY",
     "ROLE_SUPPLEMENT",
     "SkillBundle",
     "SkillExample",

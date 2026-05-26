@@ -8,7 +8,7 @@
 | 项目角色 | 使用 Skill |
 |---|---|
 | 需求分析（`analyze_requirements`） | `requirements-analysis-plus` |
-| 测试策略（`design_test_strategy`） | `requirements-analysis-plus` （复用，启用 strategy 扩展段） |
+| 测试策略（`design_test_strategy`） | `test-strategy-plus` （结构化 JSON TestStrategyV1；关闭 STRUCTURED_STRATEGY_ENABLED 时回退 analysis+扩展段） |
 | 测试用例编写（`generate_test_cases`） | `testcase-writer-plus` |
 | 测试用例评审（`review_test_cases`） | `test-case-reviewer-plus` |
 | 评审补全（`_supplement_cases_from_review`） | `testcase-writer-plus` （复用） |

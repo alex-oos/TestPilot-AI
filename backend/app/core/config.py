@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     FEISHU_DRIVE_DOMAIN: str = "my.feishu.cn"
     QUALITY_GATE_ENABLE: bool = True
     EXPECTED_RESULT_EMPTY_RATIO_THRESHOLD: float = 0.35
-    LLM_STEP_TIMEOUT_SECONDS: int = 240
-    LLM_STEP_RETRIES: int = 0
+    LLM_STEP_TIMEOUT_SECONDS: int = 360
+    LLM_STEP_RETRIES: int = 1
     LLM_MAX_SOURCE_CHARS: int = 32000
     LLM_MAX_ANALYSIS_CHARS_FOR_STRATEGY: int = 12000
 
@@ -85,9 +85,6 @@ class Settings(BaseSettings):
     QA_SKILL_PROMPT_TOKEN_BUDGET: int = 8000   # 0 = 不限制
     QA_SKILL_EXTRA_PROMPT_MAX_CHARS: int = 4000
 
-    # 智能路由：根据需求文档自动选择 generation skill
-    QA_SKILL_DISCOVER_ENABLED: bool = False
-
     # 三层降级链：skill -> contract-only -> legacy(prompts.py)；False=两层
     QA_SKILL_LEGACY_FALLBACK_ENABLED: bool = True
 
@@ -118,11 +115,43 @@ class Settings(BaseSettings):
     QUALITY_GATE_REFINE_ENABLED: bool = True
     QUALITY_GATE_REFINE_MAX: int = 30
 
+    # === 结构化策略与分批生成 ===
+    STRUCTURED_STRATEGY_ENABLED: bool = False
+    GENERATION_MAX_BATCHES: int = 20
+    GENERATION_MAX_TEST_POINTS_PER_BATCH: int = 15
+    GENERATION_BATCH_CONCURRENCY: int = 3
+    GENERATION_MAX_TOKENS_CAP: int = 16384
+    GENERATION_TOKENS_PER_TEST_POINT: int = 800
+    COVERAGE_SUPPLEMENT_ENABLED: bool = True
+    COVERAGE_REFINE_ROUNDS: int = 1
+    QUALITY_GATE_TYPE_SUPPLEMENT_ENABLED: bool = True
+
+    # === 评审门控与填充模式 ===
+    REVIEW_GATING_ENABLED: bool = True
+    REVIEW_SKIP_THRESHOLD: int = 85
+    # legacy | strict | warn
+    GENERATION_FILL_MODE: str = "legacy"
+
+    # === 知识库多阶段检索 ===
+    KB_TOP_K_ANALYSIS: int = 3
+    KB_TOP_K_STRATEGY: int = 5
+    KB_TOP_K_MODULE: int = 4
+    KB_CONTEXT_MAX_CHARS: int = 2400
+    KB_SNIPPET_MAX_CHARS: int = 600
+    KB_SKIP_TRANSIENT_INGEST: bool = True
+    KB_SQL_FALLBACK_ENABLED: bool = False
+    QA_SKILL_STRATEGY: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
 
 settings = Settings()
+
+# === 内存常量配置（不读 env，不可被 .env 覆盖）===
+# 智能路由（discover-testing）：根据需求关键词自动选择 generation skill。
+# 固定开启，UI 与运行时直接引用此常量。
+QA_SKILL_DISCOVER_ENABLED: bool = True
 
 _WEAK_JWT_SECRETS = {
     "please-change-this-secret",

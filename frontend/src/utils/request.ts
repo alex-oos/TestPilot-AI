@@ -58,4 +58,21 @@ request.interceptors.response.use(
   }
 )
 
+/** 从标准 { code, data, msg } envelope 中取出业务数据；Blob 等原始响应原样返回。 */
+export function unwrapApiData<T = unknown>(response: { data?: unknown }): T {
+  const payload = response?.data
+  if (payload instanceof Blob || payload instanceof ArrayBuffer) {
+    return payload as T
+  }
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    Object.prototype.hasOwnProperty.call(payload, 'code') &&
+    Object.prototype.hasOwnProperty.call(payload, 'data')
+  ) {
+    return (payload as { data: T }).data
+  }
+  return payload as T
+}
+
 export default request

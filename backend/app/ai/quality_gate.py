@@ -96,6 +96,30 @@ def _has_triple_format(steps: str) -> bool:
     return len(set(_STEP_TRIPLE_RE.findall(steps))) >= 2  # 至少出现 2 个 segment
 
 
+_DATA_TAG_RE = re.compile(r"\[数据\]\s*([^\[]+)")
+_KEY_VALUE_RE = re.compile(r"[\w\u4e00-\u9fa5]+\s*[=：:]\s*\S+")
+
+
+def _infer_case_type(case: dict[str, Any]) -> str:
+    """若 case_type 为空，根据 title / steps / expected_result 关键词推断。"""
+    text = " ".join([
+        str(case.get("title") or ""),
+        str(case.get("steps") or ""),
+        str(case.get("expected_result") or ""),
+    ]).lower()
+    for ct, keywords in TYPE_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return ct
+    # 默认推断为功能-正向
+    return "功能-正向"
+
+
+def _extract_test_data_from_steps(steps: str) -> str:
+    """从 [数据] 标签中提取 test_data。如 '[数据] 用户名=abc，密码=Pwd@1' → 'abc'。"""
+    matches = _DATA_TAG_RE.findall(steps)
+    return "；".join(m.strip() for m in matches if m.strip())
+
+
 def score_case(case: dict[str, Any]) -> CaseScore:
     """对单条用例打分（0-100），并给出问题列表。"""
     issues: list[str] = []
@@ -105,15 +129,26 @@ def score_case(case: dict[str, Any]) -> CaseScore:
     precondition = str(case.get("precondition") or "").strip()
     steps = str(case.get("steps") or "").strip()
     expected = str(case.get("expected_result") or "").strip()
-    test_data = str(case.get("test_data") or "").strip()
-    case_type = str(case.get("case_type") or "").strip()
     priority = str(case.get("priority") or "").strip()
     module = str(case.get("module") or "").strip()
+
+    # case_type：原始值为空时，从内容推断
+    case_type_raw = str(case.get("case_type") or "").strip()
+    case_type = case_type_raw if case_type_raw else _infer_case_type(case)
+
+    # test_data：原始值为空时，尝试从 steps [数据] 标签提取
+    test_data_raw = str(case.get("test_data") or "").strip()
+    test_data = test_data_raw if test_data_raw else _extract_test_data_from_steps(steps)
+
+    # 从 steps [数据] 标签中提取的内嵌测试数据（用于补足缺失的 test_data 字段）
+    steps_data_extracted = _extract_test_data_from_steps(steps)
 
     field_lengths = {
         "title": len(title), "precondition": len(precondition),
         "steps": len(steps), "expected_result": len(expected),
         "test_data": len(test_data),
+        # 记录从 steps 中提取到的数据长度，供 completeness/data_accuracy 评分使用
+        "steps_data_extracted": len(steps_data_extracted),
     }
 
     # title
@@ -151,20 +186,22 @@ def score_case(case: dict[str, Any]) -> CaseScore:
     if priority not in ("高", "中", "低", "P0", "P1", "P2", "P3"):
         score -= 4; issues.append("priority 非合法值")
 
-    # case_type
-    if not case_type:
-        score -= 10; issues.append("case_type 缺失")
-    elif case_type not in CASE_TYPES:
-        score -= 4; issues.append(f"case_type 非标准值({case_type})")
+    # case_type：原始值为空时用推断值不扣分（仅轻微扣分提示补全）
+    if not case_type_raw:
+        score -= 3; issues.append(f"case_type 未显式声明（推断为 {case_type}）")
+    elif case_type_raw not in CASE_TYPES:
+        score -= 4; issues.append(f"case_type 非标准值({case_type_raw})")
 
-    # test_data
-    if not test_data:
-        score -= 8; issues.append("test_data 缺失")
-    elif test_data in ("无", "略", "自定义", "参考需求"):
-        # '无' 在确实无依赖数据时合法，仅当 case_type 涉及数据时才扣分
+    # test_data：优先使用独立字段，若没有但 steps 中有 [数据] 内嵌，视为合格
+    effective_test_data = test_data_raw or steps_data_extracted
+    if not effective_test_data:
+        score -= 8; issues.append("test_data 缺失（steps 中也未找到 [数据] 内嵌值）")
+    elif effective_test_data in ("无", "略", "自定义", "参考需求"):
         if case_type in ("数据校验", "边界值", "功能-反向"):
             score -= 6; issues.append("数据相关用例 test_data 不应为'无'")
-    elif "=" not in test_data and "：" not in test_data and ":" not in test_data:
+    elif ("=" not in effective_test_data
+          and "：" not in effective_test_data
+          and ":" not in effective_test_data):
         score -= 4; issues.append("test_data 未包含字段=值结构")
 
     score = max(0, min(100, score))
@@ -186,8 +223,13 @@ def _coverage_score(types: Counter) -> int:
 def _completeness_score(case_scores: list[CaseScore]) -> int:
     if not case_scores:
         return 0
-    full = sum(1 for cs in case_scores if cs.field_lengths.get("test_data", 0) > 0
-               and cs.field_lengths.get("precondition", 0) >= 20)
+    # test_data 可能在 steps [数据] 中，只要 steps 包含 [数据] 即视为完整
+    full = sum(
+        1 for cs in case_scores
+        if (cs.field_lengths.get("test_data", 0) > 0
+            or cs.field_lengths.get("steps_data_extracted", 0) > 0)
+        and cs.field_lengths.get("precondition", 0) >= 20
+    )
     return int(round(full / len(case_scores) * 100))
 
 
@@ -214,9 +256,12 @@ def _boundary_score(types: Counter, total: int) -> int:
 def _data_accuracy_score(case_scores: list[CaseScore]) -> int:
     if not case_scores:
         return 0
+    # 若 steps_data_extracted > 0 说明 [数据] 已有具体字段值，视为数据准确
     ok = sum(
         1 for cs in case_scores
-        if not any("test_data" in i for i in cs.issues)
+        if cs.field_lengths.get("steps_data_extracted", 0) > 0
+        or (cs.field_lengths.get("test_data", 0) > 0
+            and not any("test_data" in i for i in cs.issues))
     )
     return int(round(ok / len(case_scores) * 100))
 
@@ -238,7 +283,11 @@ def _priority_balance_score(prios: Counter, total: int) -> int:
 
 def score_cases(cases: list[dict[str, Any]]) -> CasesAudit:
     case_scores = [score_case(c) for c in cases]
-    types = Counter(str(c.get("case_type") or "").strip() for c in cases)
+    # case_type：原始值为空时使用推断值，以便正确统计分布
+    types = Counter(
+        (str(c.get("case_type") or "").strip() or _infer_case_type(c))
+        for c in cases
+    )
     prios = Counter(str(c.get("priority") or "").strip() for c in cases)
     total = len(cases)
 
@@ -284,7 +333,41 @@ def find_missing_types(types: Counter) -> list[str]:
     return [t for t in critical if types.get(t, 0) == 0]
 
 
-def audit_to_payload(audit: CasesAudit, *, low_threshold: int = 60) -> dict[str, Any]:
+def module_coverage_from_cases(
+    cases: list[dict[str, Any]],
+    *,
+    expected_modules: list[str] | None = None,
+) -> dict[str, Any]:
+    """按 module 统计覆盖，返回零覆盖模块列表。"""
+    modules_in_cases = {
+        str(c.get("module") or "").strip()
+        for c in cases
+        if str(c.get("module") or "").strip()
+    }
+    zero_coverage: list[str] = []
+    if expected_modules:
+        for mod in expected_modules:
+            mod = str(mod or "").strip()
+            if not mod:
+                continue
+            if not any(mod in cm or cm in mod for cm in modules_in_cases):
+                zero_coverage.append(mod)
+    return {
+        "modules_with_cases": sorted(modules_in_cases),
+        "zero_coverage_modules": zero_coverage,
+    }
+
+
+def audit_to_payload(
+    audit: CasesAudit,
+    *,
+    low_threshold: int = 60,
+    module_coverage: dict[str, Any] | None = None,
+    filled_by_template: list[Any] | None = None,
+    blank_ratio: float | None = None,
+    pre_supplement_score: int | None = None,
+    post_supplement_score: int | None = None,
+) -> dict[str, Any]:
     """转成给 API/前端的 dict。"""
     low_ids = find_low_quality_ids(audit, threshold=low_threshold)
     payload = {
@@ -302,4 +385,14 @@ def audit_to_payload(audit: CasesAudit, *, low_threshold: int = 60) -> dict[str,
             asdict(cs) for cs in audit.cases if cs.case_id in low_ids
         ][:50],
     }
+    if module_coverage is not None:
+        payload["module_coverage"] = module_coverage
+    if filled_by_template:
+        payload["filled_by_template"] = filled_by_template
+    if blank_ratio is not None:
+        payload["expected_result_blank_ratio"] = blank_ratio
+    if pre_supplement_score is not None:
+        payload["pre_supplement_score"] = pre_supplement_score
+    if post_supplement_score is not None:
+        payload["post_supplement_score"] = post_supplement_score
     return payload

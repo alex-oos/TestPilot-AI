@@ -94,6 +94,7 @@ from app.ai.skills.builder import (
     build_analysis_messages,
     build_generation_messages,
     build_review_messages,
+    build_strategy_messages,
     build_supplement_messages,
 )
 
@@ -165,6 +166,16 @@ check("supplement: system 含 supplement Output Contract", "禁止返回空 case
 check("supplement: user 含 next_id", "id=2001" in user_p)
 check("supplement: user 含已有标题清单", "[M1] T1" in user_p)
 check("supplement: user 含 missing_scenarios JSON", '"scenario": "s"' in user_p)
+
+# strategy (structured)
+msgs, meta = build_strategy_messages(
+    analysis_result="需求分析：用户登录与权限",
+    routing_category="api",
+)
+sys_p = msgs[0]["content"]
+check("strategy: skill_id = test-strategy-plus", meta.get("skill_id") == "test-strategy-plus")
+check("strategy: system 含 TestStrategyV1", "TestStrategyV1" in sys_p or "test_points" in sys_p)
+check("strategy: API 领域提示注入", "API" in sys_p or "接口" in sys_p)
 
 
 # ---------------- 3. skill_id 覆盖优先级 ----------------
@@ -270,6 +281,7 @@ check("analysis -> requirements-analysis-plus", DEFAULT_SKILL_FOR_ROLE["analysis
 check("generation -> testcase-writer-plus", DEFAULT_SKILL_FOR_ROLE["generation"] == "testcase-writer-plus")
 check("review -> test-case-reviewer-plus", DEFAULT_SKILL_FOR_ROLE["review"] == "test-case-reviewer-plus")
 check("supplement 复用 testcase-writer-plus", DEFAULT_SKILL_FOR_ROLE["supplement"] == "testcase-writer-plus")
+check("strategy -> test-strategy-plus", DEFAULT_SKILL_FOR_ROLE.get("strategy") == "test-strategy-plus")
 
 
 # ---------------- 7. 全量资源加载 + 版本号 ----------------
@@ -398,7 +410,9 @@ check("英文检测", _detect_lang("This is an English requirement document " * 
 section("14. 降级开关")
 check("legacy_fallback 默认开启", _s.QA_SKILL_LEGACY_FALLBACK_ENABLED is True)
 check("ab 默认关闭", _s.QA_SKILL_AB_ENABLED is False)
-check("discover 默认关闭", _s.QA_SKILL_DISCOVER_ENABLED is False)
+from app.core.config import QA_SKILL_DISCOVER_ENABLED as _DISCOVER_ENABLED  # noqa: E402
+check("discover 内存常量默认开启", _DISCOVER_ENABLED is True)
+check("settings 已移除 discover 字段", not hasattr(_s, "QA_SKILL_DISCOVER_ENABLED"))
 
 
 if __name__ == "__main__":

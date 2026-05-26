@@ -9,13 +9,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.ai.ai import analyze_requirements, design_test_strategy, generate_test_cases, review_test_cases
+from app.ai.ai import (
+    analyze_requirements,
+    design_test_strategy,
+    resolve_generation_routing,
+    review_test_cases,
+    run_test_case_generation,
+)
 from app.models.test_case_model import TestCase, TestCaseStep
 from app.rag.knowledge_base import (
     build_generation_history_context,
     find_similar_requirement_history,
     ingest_adopted_test_cases,
     ingest_requirement_document,
+    ingest_task_summary,
 )
 from app.services import file_service, task_service
 from app.services.exporter import convert_cases_to_mindmap
@@ -112,6 +119,7 @@ async def _persist_adopted_cases_to_library(
 
     await db.commit()
     return {"count": len(ids), "ids": ids, "created": created, "updated": updated}
+
 
 
 def _yield_markdown_text(text: str, *, chunk_size: int = 300) -> AsyncGenerator[str, None]:
@@ -386,7 +394,13 @@ async def generate_test_cases_stream(
         current_task_id=transient_task_id,
         top_k=5,
     )
-    history_context = build_generation_history_context(similar_history) if similar_history else ""
+    history_context, _kb_meta = retrieve_kb_context(
+        "generation",
+        merged_input,
+        current_task_id=transient_task_id,
+    )
+    if not history_context and similar_history:
+        history_context = build_generation_history_context(similar_history)
 
     yield "# AI 流式生成开始\n\n"
     yield (
@@ -403,8 +417,12 @@ async def generate_test_cases_stream(
         yield chunk
     yield "\n\n## 2. 测试用例生成阶段\n\n"
 
-    design = await design_test_strategy(analysis)
-    cases = await generate_test_cases(design, history_context)
+    routing = resolve_generation_routing(f"{merged_input[:2000]}\n{analysis[:2000]}")
+    design = await design_test_strategy(analysis, routing=routing)
+    gen_result = await run_test_case_generation(design, history_context, routing=routing)
+    cases = gen_result.cases
+    if gen_result.batch_stats:
+        yield f"\n> 分批生成：{len(gen_result.batch_stats)} 批，模式={gen_result.generation_mode}\n\n"
     cases_markdown = _cases_to_markdown(cases)
     async for chunk in _yield_markdown_text(cases_markdown):
         yield chunk
@@ -505,6 +523,27 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict], db: Asyn
             kb_adopted = {"case_count": 0, "error": str(exc)}
             logger.warning("Task {} KB ingest skipped: {}", task_id, exc)
 
+    if adopted_cases:
+        modules = sorted({str(c.get("module") or "").strip() for c in adopted_cases if c.get("module")})
+        type_counts: dict[str, int] = {}
+        for c in adopted_cases:
+            ct = str(c.get("case_type") or "").strip()
+            if ct:
+                type_counts[ct] = type_counts.get(ct, 0) + 1
+        summary = f"任务 {task_id} 采纳 {len(adopted_cases)} 条用例；模块={', '.join(modules[:10])}"
+        try:
+            await asyncio.to_thread(
+                ingest_task_summary,
+                task_id=task_id,
+                summary_text=summary,
+                modules=modules,
+                case_type_counts=type_counts,
+                source_type=str(task.get("source_type") or "manual_review"),
+                file_name=str(task.get("file_name") or task.get("task_name") or ""),
+            )
+        except Exception as exc:
+            logger.warning("Task {} task_summary ingest skipped: {}", task_id, exc)
+
     library_adopted = {"count": 0, "ids": [], "created": 0, "updated": 0}
     if db is not None and adopted_cases:
         upload_meta = _task_upload_meta(task)
@@ -516,9 +555,11 @@ async def update_review_cases(task_id: str, reviewed_cases: list[dict], db: Asyn
             requirement_id=upload_meta.get("requirement_id"),
         )
         logger.info(
-            "Task {} reviewed cases persisted into test case library: {}",
+            "Task {} reviewed cases persisted into test case library: {} (created={}, updated={})",
             task_id,
             library_adopted.get("count", 0),
+            library_adopted.get("created", 0),
+            library_adopted.get("updated", 0),
         )
 
     await task_service.update_phase(task_id, "generation", "completed", {"cases": adopted_cases})

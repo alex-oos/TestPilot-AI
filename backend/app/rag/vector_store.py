@@ -392,6 +392,43 @@ class ChromaVectorStore(VectorStore):
         return int(self.collection.count())
 
 
+# ---------------------- 空实现兜底（初始化失败时降级） ----------------------
+
+class NullVectorStore(VectorStore):
+    """向量库不可用时的占位实现：所有写操作 no-op，所有查询返回空。
+
+    触发场景：
+    - Qdrant 嵌入式模式被另一个进程占用 (`Storage folder ... already accessed`)
+    - 切换后端时依赖未就绪、磁盘不可写等异常
+    - 任何 `QdrantVectorStore` / `ChromaVectorStore` 初始化时抛错
+
+    设计目标：让 KB 仅作为"增强"而非"主路径"，单点故障不应阻塞用例生成主流程。
+    """
+
+    def __init__(self, *, reason: str) -> None:
+        self.reason = reason or "vector store unavailable"
+
+    def upsert(self, records: list[VectorRecord]) -> None:
+        return None
+
+    def search(
+        self,
+        *,
+        query_vector: list[float],
+        top_k: int,
+        score_threshold: float,
+        must_filters: dict[str, Any] | None = None,
+        must_not_filters: dict[str, Any] | None = None,
+    ) -> list[SearchHit]:
+        return []
+
+    def delete_by_filter(self, filters: dict[str, Any]) -> int:
+        return 0
+
+    def count(self) -> int:
+        return 0
+
+
 # ---------------------- 工厂 + 单例 ----------------------
 
 _store: VectorStore | None = None
@@ -406,15 +443,35 @@ def get_embedding_service() -> EmbeddingService:
 
 
 def get_vector_store() -> VectorStore:
+    """返回向量库单例；初始化失败时降级为 NullVectorStore，避免阻塞主流程。
+
+    :return: VectorStore 实例（可能是 NullVectorStore，调用方不需关心）
+    """
     global _store
     if _store is not None:
         return _store
     backend = (settings.VECTOR_DB_BACKEND or "qdrant").lower()
     dim = int(settings.EMBEDDING_DIM or 1536)
-    if backend == "chroma":
-        _store = ChromaVectorStore(dim=dim)
-    else:
-        _store = QdrantVectorStore(dim=dim)
+    try:
+        if backend == "chroma":
+            _store = ChromaVectorStore(dim=dim)
+        else:
+            _store = QdrantVectorStore(dim=dim)
+    except Exception as exc:
+        reason = str(exc).strip() or repr(exc)
+        if "already accessed" in reason.lower():
+            logger.error(
+                "Qdrant 嵌入式数据库被另一进程占用：{}。本进程降级为 NullVectorStore；"
+                "请杀掉残留 python 进程后重启服务，或改用 Qdrant server 模式 (QDRANT_URL)。",
+                reason,
+            )
+        else:
+            logger.error(
+                "向量库初始化失败（backend={}），降级为 NullVectorStore：{}",
+                backend,
+                reason,
+            )
+        _store = NullVectorStore(reason=reason)
     return _store
 
 

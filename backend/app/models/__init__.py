@@ -4,6 +4,8 @@ from app.models.generation_behavior_config_model import GenerationBehaviorConfig
 from app.models.notification_config_model import NotificationConfig
 from app.models.prompt_config_model import PromptConfig
 from app.models.role_config_model import RoleConfig
+from app.models.skill_role_config_model import SkillRoleConfig
+from app.models.skill_settings_model import SkillSettings
 from app.models.task_detail_model import TaskDetail
 from app.models.task_model import Task
 from app.models.user_model import User
@@ -31,6 +33,8 @@ __all__ = [
     "PromptConfig",
     "NotificationConfig",
     "GenerationBehaviorConfig",
+    "SkillRoleConfig",
+    "SkillSettings",
     "Project",
     "ProjectMember",
     "ProjectVersion",

@@ -23,6 +23,7 @@ from app.ai.skills.catalog import (
     ROLE_ANALYSIS,
     ROLE_GENERATION,
     ROLE_REVIEW,
+    ROLE_STRATEGY,
     ROLE_SUPPLEMENT,
 )
 from app.ai.skills.loader import SkillBundle, SkillNotFoundError, get_skill_loader, load_skill
@@ -290,6 +291,7 @@ def _pick_example_for_role(
         ROLE_GENERATION: "testcase",
         ROLE_REVIEW: "review",
         ROLE_SUPPLEMENT: "testcase",
+        ROLE_STRATEGY: "strategy",
     }.get(role, "")
     candidates = [ex for ex in bundle.examples if not ex.is_binary and ex.filename.endswith(".md")]
     if not candidates:
@@ -503,6 +505,85 @@ def build_analysis_messages(
         {"role": "user", "content": f"以下是项目文档内容：\n\n{text_content}"},
     ]
     return _wrap(ROLE_ANALYSIS, messages, meta, fs)
+
+
+STRATEGY_OUTPUT_CONTRACT = """
+【输出契约（必须严格遵守）】
+你必须直接返回一个合法的 JSON 对象，不要 markdown 代码块，不要前言后语。
+JSON 必须符合 TestStrategyV1 结构：
+{
+  "version": "1",
+  "modules": [
+    {
+      "name": "模块名称",
+      "risk_level": "高|中|低",
+      "test_points": [
+        {
+          "id": "TP-001",
+          "title": "测试点描述",
+          "case_types_required": ["功能-正向", "边界值"],
+          "min_cases": 2,
+          "priority_hint": "高"
+        }
+      ]
+    }
+  ],
+  "global_requirements": {
+    "min_total_cases": 20,
+    "required_case_types": ["功能-正向", "功能-反向", "边界值", "异常处理", "数据校验"]
+  }
+}
+每个 module 至少 1 个 test_point；case_types_required 从标准 9 类中选择。
+"""
+
+
+_CATEGORY_STRATEGY_HINTS: dict[str, str] = {
+    "api": "本需求偏 API/接口测试：策略中需强调参数组合、状态码、鉴权、幂等与契约变更。",
+    "performance": "本需求偏性能：策略需包含负载/压力/容量场景与指标断言。",
+    "security": "本需求偏安全：策略需覆盖鉴权、越权、注入、敏感数据泄露等测试点。",
+    "mobile": "本需求偏移动端：策略需覆盖兼容、网络切换、前后台、权限弹窗等。",
+}
+
+
+def build_strategy_messages(
+    *,
+    analysis_result: str,
+    skill_id: str | None = None,
+    extra_business_prompt: str | None = None,
+    routing_category: str | None = None,
+    enable_fewshot: bool = True,
+    lang: str | None = None,
+) -> BuildResult:
+    """结构化测试策略生成（JSON TestStrategyV1）。"""
+    if not lang:
+        lang = _detect_lang(analysis_result)
+    category_hint = ""
+    if routing_category:
+        category_hint = _CATEGORY_STRATEGY_HINTS.get(routing_category.lower(), "")
+    output_contract = STRATEGY_OUTPUT_CONTRACT
+    if category_hint:
+        output_contract += f"\n【领域提示】\n{category_hint}\n"
+
+    system, meta, fs = _build_system_prompt(
+        role=ROLE_STRATEGY,
+        output_contract=output_contract,
+        skill_id=skill_id,
+        extra_business_prompt=extra_business_prompt,
+        enable_fewshot=enable_fewshot,
+        lang=lang,
+        fewshot_hint=analysis_result[:2000],
+    )
+    meta["detected_lang"] = lang
+    if routing_category:
+        meta["routing_category"] = routing_category
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": (
+            "以下是需求分析结果，请输出 TestStrategyV1 JSON 测试策略：\n\n"
+            f"{analysis_result}"
+        )},
+    ]
+    return _wrap(ROLE_STRATEGY, messages, meta, fs)
 
 
 def build_generation_messages(

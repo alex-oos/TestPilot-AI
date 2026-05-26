@@ -125,6 +125,16 @@ async def update_task_feishu_mindmap_url(task_id: str, feishu_mindmap_url: Optio
         task.updated_at = now
 
 
+_PHASE_LABELS: dict[str, str] = {
+    "upload": "文件上传",
+    "analysis": "需求分析",
+    "generation": "用例编写",
+    "review": "用例评审",
+    "auto_fix": "评审修复",
+    "manual_review": "人工审核",
+}
+
+
 async def update_task_phase(
     task_id: str,
     phase_key: str,
@@ -132,11 +142,21 @@ async def update_task_phase(
     data: Optional[Any] = None,
     error: Optional[str] = None,
 ) -> None:
+    """更新（或创建）指定 phase 的状态和数据（upsert 语义）。"""
     now = utc_now_text()
     async with transactional_session() as db:
         detail = await TaskDetailRepository.get_by_task_phase(db, task_id, phase_key)
         if not detail:
-            return
+            phase_label = _PHASE_LABELS.get(phase_key, phase_key)
+            detail = await TaskDetailRepository.create(
+                db,
+                task_id=task_id,
+                phase_key=phase_key,
+                phase_label=phase_label,
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
         detail.status = status
         if data is not None:
             detail.data_json = json.dumps(data, ensure_ascii=False)

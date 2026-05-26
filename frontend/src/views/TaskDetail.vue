@@ -310,71 +310,135 @@
               暂无用例可评分
             </div>
             <div v-else class="space-y-6">
+              <!-- 顶部四卡片总览 -->
               <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div class="rounded-xl p-4 border" :style="{ borderColor: qualityColor(quality.overall_score) }">
-                  <p class="text-xs text-gray-400">整体得分</p>
-                  <p class="text-3xl font-bold" :style="{ color: qualityColor(quality.overall_score) }">{{ quality.overall_score }}</p>
+                <div class="rounded-xl p-4 border-2 flex flex-col items-center justify-center"
+                     :style="{ borderColor: qualityColor(quality.overall_score) }">
+                  <p class="text-xs text-gray-400 mb-1">整体得分</p>
+                  <p class="text-4xl font-black" :style="{ color: qualityColor(quality.overall_score) }">
+                    {{ quality.overall_score ?? '--' }}
+                  </p>
+                  <p class="text-xs mt-1" :style="{ color: qualityColor(quality.overall_score) }">
+                    {{ quality.overall_score >= 85 ? '优秀' : quality.overall_score >= 70 ? '良好' : quality.overall_score >= 60 ? '合格' : '待改进' }}
+                  </p>
                 </div>
-                <div class="rounded-xl p-4 border border-gray-100">
-                  <p class="text-xs text-gray-400">单条平均分</p>
-                  <p class="text-3xl font-bold text-gray-700">{{ quality.average_case_score }}</p>
+                <div class="rounded-xl p-4 border border-gray-100 flex flex-col items-center justify-center">
+                  <p class="text-xs text-gray-400 mb-1">单条平均分</p>
+                  <p class="text-4xl font-black text-gray-700">{{ quality.average_case_score ?? '--' }}</p>
                 </div>
-                <div class="rounded-xl p-4 border border-gray-100">
-                  <p class="text-xs text-gray-400">用例总数</p>
-                  <p class="text-3xl font-bold text-gray-700">{{ quality.total }}</p>
+                <div class="rounded-xl p-4 border border-gray-100 flex flex-col items-center justify-center">
+                  <p class="text-xs text-gray-400 mb-1">用例总数</p>
+                  <p class="text-4xl font-black text-gray-700">{{ quality.total ?? '--' }}</p>
                 </div>
-                <div class="rounded-xl p-4 border border-gray-100">
-                  <p class="text-xs text-gray-400">低质量条数（&lt;{{ quality.low_threshold }}）</p>
-                  <p class="text-3xl font-bold text-red-500">{{ (quality.low_quality_ids || []).length }}</p>
+                <div class="rounded-xl p-4 border border-gray-100 flex flex-col items-center justify-center">
+                  <p class="text-xs text-gray-400 mb-1">低质量条数（&lt;{{ quality.low_threshold ?? 60 }}分）</p>
+                  <p class="text-4xl font-black"
+                     :class="(quality.low_quality_ids || []).length > 0 ? 'text-red-500' : 'text-emerald-500'">
+                    {{ (quality.low_quality_ids || []).length }}
+                  </p>
                 </div>
               </div>
 
-              <div>
-                <h4 class="text-sm font-semibold text-gray-700 mb-2">六维子分</h4>
-                <div class="space-y-2">
-                  <div v-for="(v, k) in quality.sub_scores" :key="k" class="flex items-center gap-3">
-                    <div class="w-32 text-sm text-gray-500">{{ subScoreLabel(String(k)) }}</div>
-                    <el-progress :percentage="Number(v)" :color="qualityColor(Number(v))" :stroke-width="10" class="flex-1" />
+              <!-- 六维雷达分 -->
+              <div class="rounded-xl border border-gray-100 p-4">
+                <h4 class="text-sm font-semibold text-gray-700 mb-3">六维质量评分</h4>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div v-for="(v, k) in quality.sub_scores" :key="k"
+                       class="flex items-center gap-3 rounded-lg p-2"
+                       :class="Number(v) < 70 ? 'bg-amber-50' : 'bg-gray-50'">
+                    <div class="flex items-center gap-1 w-36 shrink-0">
+                      <span class="text-base">{{ subScoreIcon(String(k)) }}</span>
+                      <span class="text-sm font-medium text-gray-700">{{ subScoreLabel(String(k)) }}</span>
+                    </div>
+                    <el-progress
+                      :percentage="Number(v)"
+                      :color="qualityColor(Number(v))"
+                      :stroke-width="10"
+                      class="flex-1"
+                      :format="(p: number) => p + '分'"
+                    />
+                    <el-tag v-if="Number(v) < 70" type="warning" effect="light" size="small">待提升</el-tag>
+                    <el-tag v-else-if="Number(v) >= 85" type="success" effect="light" size="small">优秀</el-tag>
                   </div>
                 </div>
               </div>
 
-              <div v-if="quality.weak_areas && quality.weak_areas.length" class="rounded-xl bg-amber-50 border border-amber-200 p-4">
-                <p class="text-sm text-amber-700">
-                  <strong>薄弱维度：</strong>
-                  <el-tag v-for="w in quality.weak_areas" :key="w" type="warning" effect="light" size="small" class="ml-1">{{ subScoreLabel(w) }}</el-tag>
-                </p>
-                <p v-if="quality.missing_types && quality.missing_types.length" class="text-sm text-amber-700 mt-2">
-                  <strong>缺失测试类型：</strong>
-                  <el-tag v-for="t in quality.missing_types" :key="t" type="warning" effect="light" size="small" class="ml-1">{{ t }}</el-tag>
-                </p>
+              <!-- 薄弱维度 & 缺失类型提示 -->
+              <div v-if="(quality.weak_areas && quality.weak_areas.length) || (quality.missing_types && quality.missing_types.length)"
+                   class="rounded-xl bg-amber-50 border border-amber-200 p-4 space-y-2">
+                <div v-if="quality.weak_areas && quality.weak_areas.length" class="flex items-center gap-2 flex-wrap">
+                  <span class="text-sm font-semibold text-amber-800">⚠️ 薄弱维度：</span>
+                  <el-tag v-for="w in quality.weak_areas" :key="w" type="warning" effect="light" size="small">
+                    {{ subScoreIcon(w) }} {{ subScoreLabel(w) }}
+                  </el-tag>
+                </div>
+                <div v-if="quality.missing_types && quality.missing_types.length" class="flex items-center gap-2 flex-wrap">
+                  <span class="text-sm font-semibold text-amber-800">🔍 缺失测试类型：</span>
+                  <el-tag v-for="t in quality.missing_types" :key="t" type="warning" effect="plain" size="small">{{ t }}</el-tag>
+                </div>
               </div>
 
-              <div>
-                <h4 class="text-sm font-semibold text-gray-700 mb-2">case_type 分布</h4>
-                <el-table :data="typeDistRows" size="small" border>
-                  <el-table-column prop="type" label="类型" min-width="120" />
-                  <el-table-column prop="count" label="数量" width="100" align="center" />
-                  <el-table-column label="占比" min-width="200">
-                    <template #default="scope">
-                      <el-progress :percentage="Math.round((scope.row.count / Math.max(1, quality.total)) * 100)" :stroke-width="8" />
-                    </template>
-                  </el-table-column>
-                </el-table>
+              <!-- 两列：case_type 分布 + 优先级分布 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- 用例类型分布 -->
+                <div class="rounded-xl border border-gray-100 p-4">
+                  <h4 class="text-sm font-semibold text-gray-700 mb-3">📂 用例类型分布</h4>
+                  <el-table :data="typeDistRows" size="small" :show-header="true">
+                    <el-table-column prop="type" label="类型" min-width="100" />
+                    <el-table-column prop="count" label="数量" width="65" align="center" />
+                    <el-table-column label="占比" min-width="120">
+                      <template #default="scope">
+                        <el-progress
+                          v-if="scope.row.count > 0"
+                          :percentage="Math.round((scope.row.count / Math.max(1, quality.total)) * 100)"
+                          :stroke-width="7"
+                          :color="qualityColor(Math.round((scope.row.count / Math.max(1, quality.total)) * 100))"
+                        />
+                        <span v-else class="text-xs text-gray-300">—</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+
+                <!-- 优先级分布 -->
+                <div class="rounded-xl border border-gray-100 p-4">
+                  <h4 class="text-sm font-semibold text-gray-700 mb-3">🎯 优先级分布</h4>
+                  <div class="space-y-3 mt-2">
+                    <div v-for="(cnt, level) in (quality.priority_distribution || {})" :key="level"
+                         class="flex items-center gap-3">
+                      <div class="flex items-center gap-1 w-12 shrink-0">
+                        <el-tag
+                          :type="level === '高' ? 'danger' : level === '中' ? 'warning' : 'info'"
+                          effect="dark" size="small">{{ level }}
+                        </el-tag>
+                      </div>
+                      <el-progress
+                        :percentage="Math.round((Number(cnt) / Math.max(1, quality.total)) * 100)"
+                        :stroke-width="10"
+                        :color="level === '高' ? '#ef4444' : level === '中' ? '#f59e0b' : '#6b7280'"
+                        class="flex-1"
+                        :format="(p: number) => String(cnt) + ' 条'"
+                      />
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2">建议比例：高 30% / 中 50% / 低 20%</p>
+                  </div>
+                </div>
               </div>
 
+              <!-- 低质量用例明细 -->
               <div v-if="quality.low_quality_cases && quality.low_quality_cases.length">
-                <h4 class="text-sm font-semibold text-gray-700 mb-2">低质量用例（最多 20 条）</h4>
+                <h4 class="text-sm font-semibold text-gray-700 mb-2">🔴 低质量用例明细（最多 20 条）</h4>
                 <el-table :data="quality.low_quality_cases.slice(0, 20)" size="small" border>
                   <el-table-column prop="case_id" label="编号" width="80" align="center" />
                   <el-table-column prop="score" label="得分" width="80" align="center">
                     <template #default="scope">
-                      <span :style="{ color: qualityColor(scope.row.score), fontWeight: 600 }">{{ scope.row.score }}</span>
+                      <span :style="{ color: qualityColor(scope.row.score), fontWeight: 700 }">{{ scope.row.score }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="问题" min-width="320">
+                  <el-table-column label="问题列表" min-width="320">
                     <template #default="scope">
-                      <el-tag v-for="(i, idx) in (scope.row.issues || [])" :key="idx" type="danger" effect="plain" size="small" class="mr-1 mb-1">{{ i }}</el-tag>
+                      <el-tag v-for="(issue, idx) in (scope.row.issues || [])" :key="idx"
+                              type="danger" effect="plain" size="small" class="mr-1 mb-1">{{ issue }}</el-tag>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -457,7 +521,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getTaskDetail,
   updateReviewCases,
@@ -527,7 +591,17 @@ const SUB_SCORE_LABEL: Record<string, string> = {
 
 function caseTypeLabel(t: string) { return CASE_TYPE_LABEL[t] || t }
 function caseTypeTagType(t: string) { return CASE_TYPE_TYPE[t] || 'info' }
+const SUB_SCORE_ICON: Record<string, string> = {
+  coverage: '🗺️',
+  completeness: '📋',
+  executability: '⚙️',
+  boundary: '🔍',
+  data_accuracy: '🎯',
+  priority_balance: '⚖️',
+}
+
 function subScoreLabel(k: string) { return SUB_SCORE_LABEL[k] || k }
+function subScoreIcon(k: string) { return SUB_SCORE_ICON[k] || '📌' }
 function qualityColor(score: number) {
   if (score >= 85) return '#10b981'
   if (score >= 70) return '#3b82f6'
@@ -554,12 +628,15 @@ async function loadQuality() {
   try {
     const skillsApi = await import('../api/skills')
     const r = await skillsApi.getTaskQuality(taskId)
-    quality.value = (r as any)?.data || r
+    // 后端返回 { code, data, msg } 信封，需取 .data.data 获取实际质量数据
+    const payload = (r as any)?.data
+    quality.value = payload?.data ?? payload ?? r
   } catch (e: any) {
     try {
       const skillsApi = await import('../api/skills')
       const r2 = await skillsApi.scoreCases(cases.value)
-      quality.value = (r2 as any)?.data || r2
+      const payload2 = (r2 as any)?.data
+      quality.value = payload2?.data ?? payload2 ?? r2
     } catch (e2) {
       quality.value = null
     }
@@ -720,7 +797,11 @@ const timelineProgressWidth = computed(() => {
 
 const showFinalArtifacts = computed(() => {
   const phases = task.value.phases ?? {}
-  return phases.generation?.status === 'completed' && phases.review?.status === 'completed'
+  const generationDone = phases.generation?.status === 'completed'
+  const reviewDone = phases.review?.status === 'completed'
+  // 兜底：任务整体已完成时，只要生成阶段完成即可显示最终产物
+  const taskCompleted = task.value.status === 'completed'
+  return generationDone && (reviewDone || taskCompleted)
 })
 
 const cases = computed<TestCase[]>(() => {
@@ -961,6 +1042,18 @@ function removeReviewCase(index: number) {
 async function saveReviewCases() {
   if (!reviewEditableCases.value.length) {
     ElMessage.warning('请至少保留一条评审用例')
+    return
+  }
+  const total = reviewEditableCases.value.length
+  const adopted = reviewEditableCases.value.filter((c: any) => (c.adoption_status ?? 'accepted') !== 'rejected').length
+  const rejected = total - adopted
+  try {
+    await ElMessageBox.confirm(
+      `确认保存本次评审结果？\n共 ${total} 条用例：采纳 ${adopted} 条，不采纳 ${rejected} 条。`,
+      '保存评审确认',
+      { confirmButtonText: '确认保存', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
     return
   }
   savingReviewCases.value = true

@@ -2,19 +2,20 @@ from typing import Dict, Any
 
 from app.ai.llm import llm_client
 from app.ai.prompts import DEFAULT_ANALYSIS_PROMPT, DEFAULT_GENERATION_PROMPT, DEFAULT_REVIEW_PROMPT
+from app.ai.skills.role_skill_config import (
+    normalize_role,
+    pick_configured_skill_id,
+    pick_qa_skills_enabled,
+    pick_role_skill_enabled,
+    resolve_effective_skill_id,
+)
 from app.core.config import settings
 from app.modules.persistence import config_center_store
 
 
 def _normalize_role(role: str) -> str:
-    value = (role or "").strip().lower()
-    if value in {"analysis", "需求分析", "需求分析角色"}:
-        return "analysis"
-    if value in {"generation", "用例编写", "用例编写角色", "测试用例编写"}:
-        return "generation"
-    if value in {"review", "用例评审", "用例评审角色"}:
-        return "review"
-    return value
+    """兼容旧调用方：委托 normalize_role。"""
+    return normalize_role(role)
 
 
 def _is_llm_error_text(text: str) -> bool:
@@ -77,33 +78,9 @@ def _pick_role_prompt(cfg: Dict[str, Any], role: str, fallback: str) -> str:
 
 
 def _pick_role_skill_id(cfg: Dict[str, Any], role: str) -> str:
-    """读取角色对应的 skill_id 覆盖。
-
-    优先级：配置中心 skill_configs[role] > 配置中心 skills[role] > .env 全局覆盖 > 空（用 catalog 默认）。
-    """
-    normalized_role = _normalize_role(role)
-    skill_configs = cfg.get("skill_configs", []) or []
-    if isinstance(skill_configs, list):
-        for item in skill_configs:
-            if not isinstance(item, dict) or not item.get("enabled", True):
-                continue
-            sk_role = _normalize_role(str(item.get("role") or ""))
-            if sk_role == normalized_role:
-                sid = str(item.get("skill_id") or "").strip()
-                if sid:
-                    return sid
-    skills_map = cfg.get("skills", {}) or {}
-    sid = str(skills_map.get(normalized_role) or "").strip()
-    if sid:
-        return sid
-
-    env_map = {
-        "analysis": getattr(settings, "QA_SKILL_ANALYSIS", ""),
-        "generation": getattr(settings, "QA_SKILL_GENERATION", ""),
-        "review": getattr(settings, "QA_SKILL_REVIEW", ""),
-        "supplement": getattr(settings, "QA_SKILL_SUPPLEMENT", ""),
-    }
-    return str(env_map.get(normalized_role, "") or "").strip()
+    """读取角色生效 skill_id（enabled 时走配置链，disabled 时回退 env/catalog）。"""
+    effective, _source = resolve_effective_skill_id(cfg, role)
+    return effective
 
 
 def _pick_role_extra_prompt(cfg: Dict[str, Any], role: str) -> str:
@@ -128,29 +105,29 @@ def _pick_role_extra_prompt(cfg: Dict[str, Any], role: str) -> str:
 async def _load_role_config() -> Dict[str, Dict[str, Any]]:
     cfg = await config_center_store.get_config_center()
     role_configs = cfg.get("role_configs", {}) or cfg.get("ai_models", {})
+    qa_skills_enabled = pick_qa_skills_enabled(cfg)
     analysis_options = _pick_role_model_options(cfg, "analysis")
     generation_options = _pick_role_model_options(cfg, "generation")
     review_options = _pick_role_model_options(cfg, "review")
+
+    def _build(role: str, options: dict, default_prompt: str) -> dict:
+        configured_skill = pick_configured_skill_id(cfg, role)
+        effective_skill, skill_source = resolve_effective_skill_id(cfg, role)
+        skill_enabled = pick_role_skill_enabled(cfg, role)
+        return {
+            **options,
+            "model": options.get("model") or role_configs.get(role) or llm_client.model,
+            "prompt": _pick_role_prompt(cfg, role, default_prompt),
+            "skill_id": effective_skill,
+            "configured_skill_id": configured_skill or effective_skill,
+            "skill_source": skill_source,
+            "skill_enabled": skill_enabled,
+            "qa_skills_enabled": qa_skills_enabled,
+            "extra_prompt": _pick_role_extra_prompt(cfg, role),
+        }
+
     return {
-        "analysis": {
-            **analysis_options,
-            "model": analysis_options.get("model") or role_configs.get("analysis") or llm_client.model,
-            "prompt": _pick_role_prompt(cfg, "analysis", DEFAULT_ANALYSIS_PROMPT),
-            "skill_id": _pick_role_skill_id(cfg, "analysis"),
-            "extra_prompt": _pick_role_extra_prompt(cfg, "analysis"),
-        },
-        "generation": {
-            **generation_options,
-            "model": generation_options.get("model") or role_configs.get("generation") or llm_client.model,
-            "prompt": _pick_role_prompt(cfg, "generation", DEFAULT_GENERATION_PROMPT),
-            "skill_id": _pick_role_skill_id(cfg, "generation"),
-            "extra_prompt": _pick_role_extra_prompt(cfg, "generation"),
-        },
-        "review": {
-            **review_options,
-            "model": review_options.get("model") or role_configs.get("review") or llm_client.model,
-            "prompt": _pick_role_prompt(cfg, "review", DEFAULT_REVIEW_PROMPT),
-            "skill_id": _pick_role_skill_id(cfg, "review"),
-            "extra_prompt": _pick_role_extra_prompt(cfg, "review"),
-        },
+        "analysis": _build("analysis", analysis_options, DEFAULT_ANALYSIS_PROMPT),
+        "generation": _build("generation", generation_options, DEFAULT_GENERATION_PROMPT),
+        "review": _build("review", review_options, DEFAULT_REVIEW_PROMPT),
     }

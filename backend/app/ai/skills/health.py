@@ -86,7 +86,7 @@ def _check_one(b: SkillBundle) -> SkillCheck:
     return chk
 
 
-def run_health_check() -> HealthReport:
+def run_health_check(*, role_config_view: dict[str, Any] | None = None) -> HealthReport:
     loader = get_skill_loader()
     available = loader.list_available()
     checks: list[SkillCheck] = []
@@ -114,13 +114,27 @@ def run_health_check() -> HealthReport:
         "review": settings.QA_SKILL_REVIEW,
         "supplement": settings.QA_SKILL_SUPPLEMENT,
         "discover": settings.QA_SKILL_DISCOVER,
+        "strategy": settings.QA_SKILL_STRATEGY,
     }
-    for role, default_sid in DEFAULT_SKILL_FOR_ROLE.items():
-        eff = (env_overrides.get(role) or "").strip() or default_sid
-        if eff and eff not in available:
-            role_issues.append(
-                f"role={role} → skill_id={eff} 不在 library 中（覆盖来源={'env' if env_overrides.get(role) else 'catalog默认'}）"
-            )
+    if role_config_view:
+        for item in role_config_view.get("roles") or []:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("enabled", True):
+                continue
+            eff = str(item.get("effective_skill_id") or "").strip()
+            role = str(item.get("role") or "")
+            if eff and not item.get("skill_exists", True):
+                role_issues.append(
+                    f"role={role} → skill_id={eff} 不在 library 中（来源={item.get('source', 'config')}）"
+                )
+    else:
+        for role, default_sid in DEFAULT_SKILL_FOR_ROLE.items():
+            eff = (env_overrides.get(role) or "").strip() or default_sid
+            if eff and eff not in available:
+                role_issues.append(
+                    f"role={role} → skill_id={eff} 不在 library 中（覆盖来源={'env' if env_overrides.get(role) else 'catalog默认'}）"
+                )
 
     report = HealthReport(
         ok=(failed == 0 and not role_issues),

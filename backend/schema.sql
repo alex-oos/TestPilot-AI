@@ -138,6 +138,27 @@ CREATE TABLE IF NOT EXISTS generation_behavior_configs (
 );
 CREATE INDEX IF NOT EXISTS ix_generation_behavior_configs_config_id ON generation_behavior_configs (config_id);
 
+-- 8.1 Skill 角色绑定表
+CREATE TABLE IF NOT EXISTS skill_role_configs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_id   VARCHAR NOT NULL UNIQUE,
+    role        VARCHAR NOT NULL,
+    skill_id    VARCHAR DEFAULT '',
+    enabled     BOOLEAN DEFAULT 1,
+    created_at  VARCHAR,
+    updated_at  VARCHAR
+);
+CREATE INDEX IF NOT EXISTS ix_skill_role_configs_config_id ON skill_role_configs (config_id);
+CREATE INDEX IF NOT EXISTS ix_skill_role_configs_role ON skill_role_configs (role);
+
+-- 8.2 QA Skill 全局设置表（单行 id=1）
+CREATE TABLE IF NOT EXISTS skill_settings (
+    id                INTEGER PRIMARY KEY CHECK (id = 1),
+    qa_skills_enabled BOOLEAN DEFAULT 1,
+    created_at        VARCHAR,
+    updated_at        VARCHAR
+);
+
 -- 9. 项目表
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -119,7 +119,7 @@
             </router-link>
             <router-link to="/ai-testcase/tasks" class="sub-nav-item flex items-center gap-2 !pl-10"
               :class="(route.path === '/ai-testcase/tasks' || route.path.startsWith('/ai-testcase/task/')) && 'sub-nav-active'">
-              <span>📋</span> 生成任务
+              <span>📋</span> 用例生成任务
             </router-link>
             <!-- 测试用例 -->
             <div class="!pl-6 relative py-1 mt-1">
@@ -361,7 +361,7 @@ const breadcrumbMap: Record<string, { label: string; path?: string }[]> = {
   '/hr-calendar': [{ label: '项目工作流' }, { label: '人力排期' }],
   '/hr/employees': [{ label: '项目工作流' }, { label: '人力管理' }],
   '/ai-testcase/generate': [{ label: '质量中心' }, { label: '用例生成' }],
-  '/ai-testcase/tasks': [{ label: '质量中心' }, { label: '生成任务' }],
+  '/ai-testcase/tasks': [{ label: '质量中心' }, { label: '用例生成任务' }],
   '/test-cases': [{ label: '质量中心' }, { label: '用例管理' }],
   '/test-cases/strategies': [{ label: '质量中心' }, { label: '测试策略' }],
   '/api-automation/endpoints': [{ label: '质量中心' }, { label: '接口管理' }],
@@ -386,7 +386,7 @@ const breadcrumbs = computed(() => {
   if (path.startsWith('/requirements/')) return [{ label: '项目工作流' }, { label: '需求管理', path: '/requirements' }, { label: '需求详情' }]
   if (path.startsWith('/defects/')) return [{ label: '质量中心' }, { label: '缺陷管理', path: '/defects' }, { label: '缺陷详情' }]
   if (path.startsWith('/test-cases/')) return [{ label: '质量中心' }, { label: '用例管理', path: '/test-cases' }, { label: '详情' }]
-  if (path.startsWith('/ai-testcase/task/')) return [{ label: '质量中心' }, { label: '生成任务', path: '/ai-testcase/tasks' }, { label: '任务详情' }]
+  if (path.startsWith('/ai-testcase/task/')) return [{ label: '质量中心' }, { label: '用例生成任务', path: '/ai-testcase/tasks' }, { label: '任务详情' }]
   return []
 })
 

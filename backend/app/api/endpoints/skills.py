@@ -1,8 +1,10 @@
 """QA Skills 管理 / 审计 / 智能路由相关 API。"""
 import json
+import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,18 +12,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import quality_gate
 from app.ai import llm_cache, llm_concurrency, llm_pricing
 from app.ai.skills import (
-    DEFAULT_SKILL_FOR_ROLE,
     audit as skill_audit,
     discover as skill_discover,
     get_skill_loader,
 )
 from app.ai.skills.loader import SkillNotFoundError
+from app.ai.skills.protected import is_protected_skill
+from app.ai.skills.role_skill_config import (
+    build_role_config_view,
+    list_skill_references,
+    pick_qa_skills_enabled,
+)
+from app.ai.skills.zip_exporter import ZipSkillExporter
 from app.core.auth import get_current_user
-from app.core.config import settings
+from app.core.config import QA_SKILL_DISCOVER_ENABLED, settings
 from app.core.database import get_db
 from app.core.response import success
+from app.modules.persistence import config_center_store
 
 router = APIRouter()
+
+
+class GitHubSkillImportRequest(BaseModel):
+    """GitHub Skill 导入请求体。"""
+
+    source: str
+    branch: str | None = None
+    skill_id: str | None = None
+    overwrite: bool = False
+
+
+async def _skill_usage_flags(cfg: dict, skill_id: str) -> dict:
+    """计算 Skill 是否受保护、是否被角色引用。"""
+    refs = list_skill_references(cfg, skill_id)
+    return {
+        "protected": is_protected_skill(skill_id),
+        "referenced_by_roles": [r["role"] for r in refs],
+        "deletable": not is_protected_skill(skill_id) and not refs,
+    }
 
 
 def _bundle_summary(b) -> dict:
@@ -50,45 +78,32 @@ async def list_skills(
     lang: str | None = Query(None, description="按语言过滤（zh/en），留空返回全部"),
     current_user: dict = Depends(get_current_user),
 ):
-    """列出所有可用 QA Skill 及当前角色映射。"""
+    """列出所有可用 QA Skill。"""
     loader = get_skill_loader()
     available = loader.list_available(lang=lang)
+    cfg = await config_center_store.get_config_center()
+    qa_enabled = pick_qa_skills_enabled(cfg)
 
     skills_meta = []
     for sid in available:
+        flags = await _skill_usage_flags(cfg, sid)
         try:
             b = loader.load(sid)
-            skills_meta.append(_bundle_summary(b))
+            skills_meta.append({**_bundle_summary(b), **flags})
         except Exception as exc:
-            skills_meta.append({"skill_id": sid, "error": str(exc)})
-
-    env_overrides = {
-        "analysis": settings.QA_SKILL_ANALYSIS,
-        "generation": settings.QA_SKILL_GENERATION,
-        "review": settings.QA_SKILL_REVIEW,
-        "supplement": settings.QA_SKILL_SUPPLEMENT,
-        "discover": settings.QA_SKILL_DISCOVER,
-    }
-    role_mapping = {}
-    for role, default_sid in DEFAULT_SKILL_FOR_ROLE.items():
-        env_sid = (env_overrides.get(role) or "").strip()
-        role_mapping[role] = {
-            "default_skill_id": default_sid,
-            "env_override": env_sid,
-            "effective_skill_id": env_sid or default_sid,
-        }
+            skills_meta.append({"skill_id": sid, "error": str(exc), **flags})
 
     return success({
-        "enabled": bool(settings.USE_QA_SKILLS),
+        "enabled": qa_enabled,
+        "env_enabled": bool(settings.USE_QA_SKILLS),
         "fewshot_enabled": bool(settings.QA_SKILL_FEWSHOT_ENABLED),
-        "discover_enabled": bool(settings.QA_SKILL_DISCOVER_ENABLED),
+        "discover_enabled": QA_SKILL_DISCOVER_ENABLED,
         "ab_enabled": bool(settings.QA_SKILL_AB_ENABLED),
         "legacy_fallback_enabled": bool(settings.QA_SKILL_LEGACY_FALLBACK_ENABLED),
         "prompt_token_budget": int(settings.QA_SKILL_PROMPT_TOKEN_BUDGET),
         "library_dir": str(loader.library_dir),
         "active_overlays": [str(p) for p in loader.get_overlay_dirs()],
         "skills": skills_meta,
-        "role_mapping": role_mapping,
     }, request.state.tid)
 
 
@@ -96,8 +111,234 @@ async def list_skills(
 async def skills_health_priority(request: Request, current_user: dict = Depends(get_current_user)):
     """运行时健康检查（路由冲突优先注册版）。"""
     from app.ai.skills.health import run_health_check
-    rep = run_health_check()
+
+    role_view = await build_role_config_view()
+    rep = run_health_check(role_config_view=role_view)
     return success(rep.as_dict(), request.state.tid)
+
+
+@router.post("/ai/skills/import/github/preview")
+async def preview_github_skill_import(
+    payload: GitHubSkillImportRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """预览 GitHub Skill 导入（不写入磁盘）。"""
+    from app.ai.skills.github_importer import GitHubSkillImportError, GitHubSkillImporter
+
+    try:
+        preview = await GitHubSkillImporter().preview(
+            payload.source,
+            branch_override=payload.branch,
+            skill_id_override=payload.skill_id,
+        )
+    except GitHubSkillImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    ref = preview.ref
+    return success({
+        "ref": {
+            "owner": ref.owner,
+            "repo": ref.repo,
+            "branch": ref.branch,
+            "skill_path": ref.skill_path,
+            "skill_id": ref.skill_id,
+            "resolved_from": ref.resolved_from,
+            "github_tree_url": (
+                f"https://github.com/{ref.owner}/{ref.repo}/tree/{ref.branch}/{ref.skill_path}"
+            ),
+        },
+        "exists_locally": preview.exists_locally,
+        "local_path": preview.local_path,
+        "remote_file_count": preview.remote_file_count,
+        "remote_total_bytes": preview.remote_total_bytes,
+        "sample_files": preview.sample_files,
+    }, request.state.tid)
+
+
+@router.post("/ai/skills/import/github")
+async def import_github_skill(
+    payload: GitHubSkillImportRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """从 GitHub 一键导入 Skill 到本地 library/ 并重载缓存。"""
+    from app.ai.skills.github_importer import GitHubSkillImportError, GitHubSkillImporter
+
+    try:
+        result = await GitHubSkillImporter().import_skill(
+            payload.source,
+            branch_override=payload.branch,
+            skill_id_override=payload.skill_id,
+            overwrite=bool(payload.overwrite),
+        )
+        loader = get_skill_loader()
+        bundle_summary = None
+        try:
+            b = loader.load(result.skill_id)
+            bundle_summary = _bundle_summary(b)
+        except Exception as exc:
+            bundle_summary = {"skill_id": result.skill_id, "error": str(exc)}
+
+        ref = result.ref
+        return success({
+            "imported": True,
+            "skill_id": result.skill_id,
+            "dest_path": result.dest_path,
+            "files_written": result.files_written,
+            "bytes_written": result.bytes_written,
+            "overwritten": result.overwritten,
+            "validation_message": result.validation_message,
+            "ref": {
+                "owner": ref.owner,
+                "repo": ref.repo,
+                "branch": ref.branch,
+                "skill_path": ref.skill_path,
+                "resolved_from": ref.resolved_from,
+                "github_tree_url": (
+                    f"https://github.com/{ref.owner}/{ref.repo}/tree/{ref.branch}/{ref.skill_path}"
+                ),
+            },
+            "skill": bundle_summary,
+            "available": loader.list_available(),
+        }, request.state.tid)
+    except GitHubSkillImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _zip_analysis_payload(analysis) -> dict:
+    """将 ZIP 解析结果转为 API 响应字段。"""
+    return {
+        "skill_id": analysis.skill_id,
+        "skill_root": analysis.skill_root,
+        "detected_from": analysis.detected_from,
+        "archive_name": analysis.archive_name,
+        "file_count": analysis.file_count,
+        "total_bytes": analysis.total_bytes,
+        "sample_files": analysis.sample_files,
+        "skill_md_preview": analysis.skill_md_preview,
+        "ambiguous_candidates": analysis.ambiguous_candidates,
+    }
+
+
+@router.post("/ai/skills/import/zip/preview")
+async def preview_zip_skill_import(
+    request: Request,
+    file: UploadFile = File(..., description="Skill ZIP 压缩包"),
+    skill_id: str | None = Form(None, description="可选，覆盖导入后的 skill 目录名"),
+    current_user: dict = Depends(get_current_user),
+):
+    """预览 ZIP Skill 导入（自动解析结构，不写入磁盘）。"""
+    from app.ai.skills.zip_importer import ZipSkillImportError, ZipSkillImporter
+
+    raw = await file.read()
+    try:
+        preview = ZipSkillImporter().preview(
+            raw,
+            archive_name=file.filename or "",
+            skill_id_override=skill_id,
+        )
+    except ZipSkillImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return success({
+        "analysis": _zip_analysis_payload(preview.analysis),
+        "exists_locally": preview.exists_locally,
+        "local_path": preview.local_path,
+    }, request.state.tid)
+
+
+@router.post("/ai/skills/import/zip")
+async def import_zip_skill(
+    request: Request,
+    file: UploadFile = File(..., description="Skill ZIP 压缩包"),
+    skill_id: str | None = Form(None, description="可选，覆盖导入后的 skill 目录名"),
+    overwrite: bool = Form(False, description="是否覆盖已存在的同名 Skill"),
+    current_user: dict = Depends(get_current_user),
+):
+    """从 ZIP 包导入 Skill 到本地 library/ 并重载缓存。"""
+    from app.ai.skills.zip_importer import ZipSkillImportError, ZipSkillImporter
+
+    raw = await file.read()
+    try:
+        result = ZipSkillImporter().import_skill(
+            raw,
+            archive_name=file.filename or "",
+            skill_id_override=skill_id,
+            overwrite=bool(overwrite),
+        )
+        loader = get_skill_loader()
+        bundle_summary = None
+        try:
+            b = loader.load(result.skill_id)
+            bundle_summary = _bundle_summary(b)
+        except Exception as exc:
+            bundle_summary = {"skill_id": result.skill_id, "error": str(exc)}
+
+        return success({
+            "imported": True,
+            "skill_id": result.skill_id,
+            "dest_path": result.dest_path,
+            "files_written": result.files_written,
+            "bytes_written": result.bytes_written,
+            "overwritten": result.overwritten,
+            "validation_message": result.validation_message,
+            "detected_from": result.detected_from,
+            "skill": bundle_summary,
+            "available": loader.list_available(),
+        }, request.state.tid)
+    except ZipSkillImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ai/skills/{skill_id}/export")
+async def export_skill_zip(
+    skill_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """导出 Skill 目录为 ZIP。"""
+    try:
+        data, filename = ZipSkillExporter().export_bytes(skill_id)
+    except SkillNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete("/ai/skills/{skill_id}")
+async def delete_skill(
+    skill_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """删除非受保护且未被角色引用的 Skill 目录。"""
+    sid = (skill_id or "").strip()
+    if is_protected_skill(sid):
+        raise HTTPException(status_code=403, detail=f"Skill '{sid}' 为内置受保护 Skill，不可删除")
+
+    cfg = await config_center_store.get_config_center()
+    refs = list_skill_references(cfg, sid)
+    if refs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"Skill '{sid}' 仍被角色配置引用，请先修改绑定",
+                "references": refs,
+            },
+        )
+
+    loader = get_skill_loader()
+    skill_dir = loader.library_dir / sid
+    if not skill_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Skill 不存在: {sid}")
+
+    shutil.rmtree(skill_dir)
+    loader.reset_cache()
+    return success({"deleted": True, "skill_id": sid}, request.state.tid)
 
 
 @router.get("/ai/skills/{skill_id}")

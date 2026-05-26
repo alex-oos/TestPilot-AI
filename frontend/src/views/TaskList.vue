@@ -3,10 +3,10 @@
     <div class="flex items-center justify-between">
       <div>
         <h1 class="text-3xl font-bold text-gray-900 mb-2">任务列表</h1>
-        <p class="text-gray-500">查看最近提交的测试用例生成任务，点击可进入详情页。</p>
+        <p class="text-gray-500">查看最近提交的用例生成任务，点击可进入详情页。</p>
       </div>
       <el-button type="primary" color="#4f46e5" class="!rounded-xl" @click="router.push('/generate')">
-        + 新建生成任务
+        + 新建用例生成任务
       </el-button>
     </div>
 

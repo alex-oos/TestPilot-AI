@@ -2,6 +2,127 @@
 
 AI 测试用例生成平台：支持飞书/钉钉文档、本地文件（含图片 OCR）、手动输入，完成需求分析 → 用例生成 → 用例评审 → 人工采纳 → 经验沉淀（向量库）全流程。
 
+## 今日版本改动总览（2026-05-26 · QA Skills 管理与覆盖驱动生成）
+
+> 主题：围绕 QA Skills 中心、结构化测试策略、覆盖矩阵、RAG 多阶段检索和生成质量门禁，补齐“可导入、可绑定、可回滚、可审计、可解释”的 AI 用例生成工程化能力。
+
+### 一、本轮新增能力一览
+
+| # | 能力 | 关键模块 | 价值 |
+|---|------|---------|------|
+| 1 | **Skill 角色绑定中心** | `skill_role_config.py` / `role_skill_config.py` / `SkillRoleConfig` / `SkillSettings` | 支持在配置中心维护 analysis、generation、review 三类 pipeline 角色的 Skill 绑定、启用状态和全局 QA Skills 开关 |
+| 2 | **Skill 导入 / 导出 / 删除** | `github_importer.py` / `zip_importer.py` / `zip_exporter.py` / `protected.py` | 支持从 GitHub tree/blob、仓库简写、默认 awesome-qa-skills skill_id 或本地 ZIP 导入 Skill；支持导出 ZIP；内置和被角色引用的 Skill 禁止误删 |
+| 3 | **结构化测试策略** | `strategy_schema.py` / `test-strategy-plus` | 新增 TestStrategyV1 JSON 策略结构，按模块、测试点、用例类型和最少用例数约束下游生成 |
+| 4 | **分批用例生成编排器** | `generation_orchestrator.py` | 根据结构化策略拆分批次，并发生成、合并去重、模块归一、缺口补全和质量审计，避免大需求一次性生成不完整 |
+| 5 | **覆盖矩阵与缺口补全** | `coverage_planner.py` | 建立 test_point → case_ids 覆盖矩阵，识别未覆盖测试点和缺失 case_type，支持定向补充用例 |
+| 6 | **RAG 多阶段检索增强** | `knowledge_base.py` / `vector_store.py` | 为 analysis、strategy、generation 分阶段检索历史经验；加入 rerank、任务摘要沉淀、上下文裁剪和任务级知识清理能力 |
+| 7 | **质量门禁与评审门控** | `quality_gate.py` / `pipeline.py` | 生成后输出 quality_audit、低质量用例明细、模块覆盖率；高质量结果可跳过全量评审，评审发现问题时自动进入 auto_fix 修复阶段 |
+| 8 | **长文档上下文压缩** | `context_compressor.py` / `ai.py` | 对需求原文和分析结果按阶段压缩后再进入 LLM，降低超长 PRD 对策略生成和用例生成的影响 |
+| 9 | **Skills Center 前端升级** | `SkillsCenter.vue` / `skills.ts` / `skillRoleConfig.ts` | 新增角色配置、全局开关、GitHub/ZIP 导入、导出、删除、引用标记、内置标记和标准响应解包 |
+| 10 | **任务详情质量面板优化** | `TaskDetail.vue` | 用四卡片总览、六维评分、用例类型分布、优先级分布和低质量明细展示生成质量；保存评审前增加采纳/不采纳确认 |
+
+### 二、新增 / 增强的主要 API
+
+```text
+# Skill 角色绑定
+GET    /ai/skill-role-config
+PUT    /ai/skill-role-config
+
+# Skill 导入、导出与删除
+POST   /ai/skills/import/github/preview
+POST   /ai/skills/import/github
+POST   /ai/skills/import/zip/preview
+POST   /ai/skills/import/zip
+GET    /ai/skills/{skill_id}/export
+DELETE /ai/skills/{skill_id}
+
+# Skill 与质量观测
+GET    /ai/skills
+POST   /ai/skills/reload
+POST   /ai/skills/discover
+POST   /ai/quality/score
+GET    /ai/quality/task/{task_id}
+GET    /ai/llm/cache/stats
+GET    /ai/llm/concurrency/stats
+GET    /ai/llm/cost/recent
+POST   /ai/skills/audit/purge
+```
+
+### 三、AI 生成链路增强
+
+- 需求分析、测试策略、用例生成均接入分阶段 KB 检索上下文，并对召回结果进行 rerank。
+- `STRUCTURED_STRATEGY_ENABLED=true` 时，策略阶段优先输出 TestStrategyV1 JSON；失败时仍可从 Markdown 策略降级解析。
+- 用例生成支持按模块 / 测试点分批执行，合并后自动去重、重排 ID、对齐策略模块。
+- 生成后计算覆盖矩阵、预期最少用例数、六维质量分和低质量用例列表。
+- 覆盖不足或缺失必需 case_type 时，可按缺口定向补充；评审阶段发现问题时可触发自动修复。
+- `GENERATION_FILL_MODE` 支持 `legacy`、`warn`、`strict`，可控制空字段是否允许模板兜底填充。
+- 智能路由 `discover-testing` 固定在代码常量中启用，不再依赖 `.env` 中的 `QA_SKILL_DISCOVER_ENABLED`。
+
+### 四、新增配置（`backend/.env`）
+
+```bash
+# LLM 调用守护
+LLM_STEP_TIMEOUT_SECONDS=360
+LLM_STEP_RETRIES=1
+
+# 知识库多阶段检索
+KB_TOP_K_ANALYSIS=3
+KB_TOP_K_STRATEGY=5
+KB_TOP_K_MODULE=4
+KB_CONTEXT_MAX_CHARS=2400
+KB_SNIPPET_MAX_CHARS=600
+KB_SKIP_TRANSIENT_INGEST=true
+KB_SQL_FALLBACK_ENABLED=false
+
+# 结构化策略 / 分批生成
+STRUCTURED_STRATEGY_ENABLED=false
+GENERATION_MAX_BATCHES=20
+GENERATION_MAX_TEST_POINTS_PER_BATCH=15
+GENERATION_BATCH_CONCURRENCY=3
+COVERAGE_SUPPLEMENT_ENABLED=true
+COVERAGE_REFINE_ROUNDS=1
+QUALITY_GATE_TYPE_SUPPLEMENT_ENABLED=true
+REVIEW_GATING_ENABLED=true
+REVIEW_SKIP_THRESHOLD=85
+GENERATION_FILL_MODE=legacy
+QA_SKILL_STRATEGY=""
+
+# GitHub Skill 一键导入（可选）
+# GITHUB_TOKEN=""
+```
+
+### 五、新增数据模型与迁移
+
+```text
+SkillRoleConfig      # pipeline 角色与 skill_id 的绑定关系
+SkillSettings        # QA Skills 全局开关（单行 id=1）
+```
+
+- `backend/schema.sql` 新增 `skill_role_configs` 与 `skill_settings` 表。
+- `backend/migrations/008_add_skill_settings_created_at.sql` 补齐 Skill 设置表时间字段。
+- `db_initializer.py` 修复 SQL 文件执行时注释行导致建表语句被跳过的问题。
+
+### 六、前端体验变化
+
+- QA Skills 中心新增“角色配置”页签，可直接修改三类角色绑定和每个角色的 Skill 启用状态。
+- Skill 列表展示“内置”“被角色引用”标记，并根据保护状态控制删除按钮。
+- 支持 GitHub 一键导入与 ZIP 手动导入，导入前可预览远端 / 压缩包内文件数、体积、路径和本地冲突。
+- 任务详情的质量面板升级为更直观的得分总览、维度分、类型分布、优先级分布和低质量用例明细。
+- 保存人工评审结果前会确认采纳与不采纳数量，避免误操作。
+
+### 七、本轮测试覆盖
+
+| 测试文件 | 覆盖内容 |
+|---|---|
+| `tests/test_strategy_schema.py` | TestStrategyV1 JSON 解析、Markdown 降级解析、最少用例数计算 |
+| `tests/test_coverage_planner.py` | 覆盖矩阵、缺口检测、分批合并、去重与模块归一 |
+| `tests/test_skill_management.py` | 角色绑定优先级、全局开关、内置保护、ZIP 导出 |
+| `tests/test_github_skill_importer.py` | GitHub tree/blob URL、简写路径、skill_id 自动探测和 SKILL.md 校验 |
+| `tests/test_zip_skill_importer.py` | ZIP 根目录 / 单层目录 / 深层目录 Skill 解析、非法包校验、skill_id 覆盖 |
+| `tests/test_knowledge_base_rerank.py` | KB rerank、历史上下文构建、空查询兜底 |
+
+---
+
 ## 今日版本改动总览（2026-05-12 · 一体化测试管理平台）
 
 > 主题：在原 AI 测试用例生成链路之上，扩展为覆盖“项目 → 需求 → 人力排期 → 用例 → 执行 → 缺陷 → 报告”的测试管理平台，并补齐接口自动化、性能管理和效率工具入口。

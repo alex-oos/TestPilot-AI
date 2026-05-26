@@ -16,16 +16,14 @@ export interface SkillSummary {
   overlays_applied?: string[]
   content_hash?: string
   error?: string
-}
-
-export interface RoleMappingItem {
-  default_skill_id: string
-  env_override: string
-  effective_skill_id: string
+  protected?: boolean
+  referenced_by_roles?: string[]
+  deletable?: boolean
 }
 
 export interface SkillsListResponse {
   enabled: boolean
+  env_enabled?: boolean
   fewshot_enabled: boolean
   discover_enabled: boolean
   ab_enabled: boolean
@@ -34,7 +32,6 @@ export interface SkillsListResponse {
   library_dir: string
   active_overlays: string[]
   skills: SkillSummary[]
-  role_mapping: Record<string, RoleMappingItem>
 }
 
 export async function listSkills(lang?: string) {
@@ -48,6 +45,54 @@ export async function getSkill(skillId: string) {
 
 export async function reloadSkills() {
   return request.post('/ai/skills/reload')
+}
+
+export async function exportSkill(skillId: string) {
+  return request.get(`/ai/skills/${encodeURIComponent(skillId)}/export`, {
+    responseType: 'blob',
+  })
+}
+
+export async function deleteSkill(skillId: string) {
+  return request.delete(`/ai/skills/${encodeURIComponent(skillId)}`)
+}
+
+export interface GitHubSkillImportPayload {
+  source: string
+  branch?: string
+  skill_id?: string
+  overwrite?: boolean
+}
+
+export async function previewGithubSkillImport(payload: GitHubSkillImportPayload) {
+  return request.post('/ai/skills/import/github/preview', payload)
+}
+
+export async function importGithubSkill(payload: GitHubSkillImportPayload) {
+  return request.post('/ai/skills/import/github', payload)
+}
+
+export async function previewZipSkillImport(file: File, skillId?: string) {
+  const form = new FormData()
+  form.append('file', file)
+  if (skillId?.trim()) {
+    form.append('skill_id', skillId.trim())
+  }
+  return request.post('/ai/skills/import/zip/preview', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export async function importZipSkill(file: File, skillId?: string, overwrite = false) {
+  const form = new FormData()
+  form.append('file', file)
+  if (skillId?.trim()) {
+    form.append('skill_id', skillId.trim())
+  }
+  form.append('overwrite', overwrite ? 'true' : 'false')
+  return request.post('/ai/skills/import/zip', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
 }
 
 export async function listAuditRecent(params: { limit?: number; role?: string; task_id?: string } = {}) {

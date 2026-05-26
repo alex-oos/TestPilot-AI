@@ -30,7 +30,12 @@ async def _execute_sql_file(conn, sql_path: Path) -> None:
     sql_content = sql_path.read_text(encoding="utf-8")
     for statement in sql_content.split(";"):
         stmt = statement.strip()
-        if not stmt or stmt.startswith("--"):
+        if not stmt:
+            continue
+        # 去掉语句块前的注释行，避免 CREATE TABLE 被误判为纯注释而跳过
+        lines = [ln for ln in stmt.splitlines() if ln.strip() and not ln.strip().startswith("--")]
+        stmt = "\n".join(lines).strip()
+        if not stmt:
             continue
         try:
             await conn.execute(text(stmt))

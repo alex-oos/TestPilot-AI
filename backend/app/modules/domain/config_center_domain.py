@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, transactional_session
 from app.util.time_utils import to_beijing_time_text, utc_now_text
+from app.ai.skills.catalog import DEFAULT_SKILL_FOR_ROLE
 from app.repositories import (
     AIConfigRepository,
     GenerationBehaviorConfigRepository,
@@ -10,6 +11,8 @@ from app.repositories import (
     PromptConfigRepository,
     RoleConfigRepository,
 )
+from app.repositories.skill_role_config_repository import SkillRoleConfigRepository
+from app.repositories.skill_settings_repository import SkillSettingsRepository
 
 
 def _normalize_role_type(value: str) -> str:
@@ -256,9 +259,55 @@ async def seed_default_config_center() -> None:
                     updated_at=now,
                 )
 
+        if not await SkillRoleConfigRepository.list(db):
+            for role, skill_id in DEFAULT_SKILL_FOR_ROLE.items():
+                if role not in ("analysis", "generation", "review"):
+                    continue
+                await SkillRoleConfigRepository.create(
+                    db,
+                    config_id=f"default-{role}-skill",
+                    role=role,
+                    skill_id=skill_id,
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+
+        if await SkillSettingsRepository.get(db) is None:
+            await SkillSettingsRepository.upsert(
+                db,
+                qa_skills_enabled=bool(settings.USE_QA_SKILLS),
+                updated_at=now,
+            )
+
 
 async def get_default_prompt_configs() -> List[Dict[str, Any]]:
     return _default_prompt_items(utc_now_text())
+
+
+async def _load_skill_role_items(db) -> List[Dict[str, Any]]:
+    """加载 Skill 角色绑定列表。"""
+    rows = await SkillRoleConfigRepository.list(db)
+    return [
+        {
+            "id": r.config_id,
+            "config_id": r.config_id,
+            "role": r.role,
+            "skill_id": r.skill_id,
+            "enabled": bool(r.enabled),
+            "created_at": to_beijing_time_text(r.created_at),
+            "updated_at": to_beijing_time_text(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _load_qa_skills_enabled(db) -> bool:
+    """读取全局 QA Skill 开关。"""
+    row = await SkillSettingsRepository.get(db)
+    if row is not None:
+        return bool(row.qa_skills_enabled)
+    return bool(settings.USE_QA_SKILLS)
 
 
 async def get_config_center() -> Dict[str, Any]:
@@ -273,6 +322,8 @@ async def get_config_center() -> Dict[str, Any]:
             "prompt_configs": await _load_prompt_items(db),
             "notifications": await _load_notifications(db),
             "generation_behavior_configs": await _load_behavior_items(db),
+            "skill_configs": await _load_skill_role_items(db),
+            "qa_skills_enabled": await _load_qa_skills_enabled(db),
         }
 
 
@@ -287,6 +338,8 @@ async def update_config_center(payload: Dict[str, Any]) -> Dict[str, Any]:
         await update_generation_behavior_configs_section(payload.get("generation_behavior_configs"))
     if payload.get("notifications") is not None:
         await update_notifications_section(payload.get("notifications") or {})
+    if payload.get("skill_configs") is not None or payload.get("qa_skills_enabled") is not None:
+        await update_skill_configs_section(payload)
     return await get_config_center()
 
 
@@ -596,3 +649,47 @@ async def delete_notification_channel_config(channel: str) -> Dict[str, Any]:
         if deleted <= 0:
             raise ValueError("消息提醒配置不存在")
         return {"notifications": await _load_notifications(db)}
+
+
+async def get_skill_configs_section() -> Dict[str, Any]:
+    """读取 Skill 角色绑定与全局开关。"""
+    async with AsyncSessionLocal() as db:
+        return {
+            "skill_configs": await _load_skill_role_items(db),
+            "qa_skills_enabled": await _load_qa_skills_enabled(db),
+        }
+
+
+async def update_skill_configs_section(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """更新 Skill 角色绑定与全局开关。"""
+    now = utc_now_text()
+    async with transactional_session() as db:
+        if payload.get("qa_skills_enabled") is not None:
+            await SkillSettingsRepository.upsert(
+                db,
+                qa_skills_enabled=bool(payload.get("qa_skills_enabled")),
+                updated_at=now,
+            )
+        if payload.get("skill_configs") is not None:
+            items = payload.get("skill_configs") if isinstance(payload.get("skill_configs"), list) else []
+            await SkillRoleConfigRepository.clear(db)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "").strip()
+                if not role:
+                    continue
+                cfg_id = str(item.get("id") or item.get("config_id") or f"skill-{role}-{now}").strip()
+                await SkillRoleConfigRepository.create(
+                    db,
+                    config_id=cfg_id,
+                    role=role,
+                    skill_id=str(item.get("skill_id") or DEFAULT_SKILL_FOR_ROLE.get(role, "")).strip(),
+                    enabled=bool(item.get("enabled", True)),
+                    created_at=to_beijing_time_text(item.get("created_at")) or now,
+                    updated_at=to_beijing_time_text(item.get("updated_at")) or now,
+                )
+        return {
+            "skill_configs": await _load_skill_role_items(db),
+            "qa_skills_enabled": await _load_qa_skills_enabled(db),
+        }
