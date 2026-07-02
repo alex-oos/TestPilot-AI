@@ -1,0 +1,40 @@
+{
+  "name": "moonpostman-platform",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@tailwindcss/vite": "^4.2.1",
+    "@wangeditor/editor": "^5.1.23",
+    "@wangeditor/editor-for-vue": "^5.1.12",
+    "axios": "^1.13.6",
+    "codemirror": "^6.0.2",
+    "element-plus": "^2.13.5",
+    "pinia": "^3.0.4",
+    "simple-mind-map": "^0.14.0-fix.2",
+    "tailwindcss": "^4.2.1",
+    "vue": "^3.5.30",
+    "vue-codemirror": "^6.1.1",
+    "vue-router": "^5.0.3",
+    "vuedraggable": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "@vue/tsconfig": "^0.9.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.0",
+    "vue-tsc": "^3.2.5"
+  }
+}

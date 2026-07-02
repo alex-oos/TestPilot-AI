@@ -1,0 +1,35 @@
+from dataclasses import dataclass
+
+from app.core.config import settings
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    title: str = "月亮邮寄员项目管理平台 API"
+    description: str = "🌙 月亮邮寄员 — 一站式项目管理、需求追踪、人力排期与 AI 测试平台"
+    version: str = "1.0.0"
+    docs_url: str | None = "/docs"
+    redoc_url: str | None = "/redoc"
+    openapi_url: str | None = "/openapi.json"
+    api_prefix: str = "/api"
+
+    cors_origin_enable: bool = True
+    allow_origins: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8001", "http://127.0.0.1:8001")
+    allow_credentials: bool = True
+    allow_methods: tuple[str, ...] = ("*",)
+    allow_headers: tuple[str, ...] = ("*",)
+
+    host: str = "0.0.0.0"
+    port: int = 8001
+    reload: bool = True
+
+
+app_settings = AppSettings(
+    version="1.0.0",
+    host="0.0.0.0",
+    port=8001,
+    reload=True,
+)
+
+# Re-export legacy runtime settings so service code can keep using one place.
+runtime_settings = settings

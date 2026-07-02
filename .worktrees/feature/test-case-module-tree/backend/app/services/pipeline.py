@@ -1,0 +1,779 @@
+"""
+Background task runner - executes upload->analysis->generation->review->manual_review pipeline.
+Each phase reports progress to the task manager so SSE can stream it to frontend.
+"""
+import asyncio
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+from loguru import logger
+from app.ai.ai import (
+    analyze_requirements,
+    design_test_strategy,
+    fix_cases_by_review,
+    resolve_generation_routing,
+    review_test_cases,
+    run_test_case_generation,
+    set_current_task_id,
+)
+from app.ai.generation_orchestrator import should_skip_full_review
+from app.ai.strategy_schema import try_parse_strategy
+from app.ai.skills import audit as skill_audit
+from app.core.config import settings
+from app.modules.persistence import config_center_store
+from app.modules.dingtalk import read_dingtalk_doc
+from app.modules.feishu import read_feishu_doc, write_feishu_doc
+from app.rag.knowledge_base import (
+    build_generation_history_context,
+    find_similar_requirement_history,
+    ingest_requirement_document,
+    rerank_kb_hits,
+    retrieve_kb_context,
+)
+from app.services.notification import notify_task_event
+from app.services.exporter import convert_cases_to_mindmap
+from app.services import task_manager
+from app.services import file_service
+from app.services.file_storage import read_uploaded_bytes
+
+ANALYSIS_SUB_STEP_META = [
+    ("parse_clean", "解析与清洗"),
+    ("chunking", "需求拆分 Chunking"),
+    ("metadata_build", "元数据构建"),
+    ("embedding_store", "Embedding 向量化入库"),
+    ("vector_retrieval", "向量检索 TopK"),
+    ("rerank_filter", "重排与过滤"),
+    ("prompt_assembly", "组装分析上下文"),
+    ("llm_analysis", "LLM 需求分析"),
+    ("strategy_design", "测试策略生成"),
+]
+QUALITY_BLOCKED_STATUS = "quality_blocked"
+
+
+def _evaluate_expected_result_quality(cases: list[dict], threshold: float) -> dict:
+    total = len(cases or [])
+    if total <= 0:
+        return {
+            "total_cases": 0,
+            "blank_expected_count": 0,
+            "blank_ratio": 0.0,
+            "threshold": threshold,
+            "passed": False,
+        }
+    blank_count = sum(1 for item in cases if not str((item or {}).get("expected_result") or "").strip())
+    blank_ratio = blank_count / total
+    return {
+        "total_cases": total,
+        "blank_expected_count": blank_count,
+        "blank_ratio": blank_ratio,
+        "threshold": threshold,
+        "passed": blank_ratio <= threshold,
+    }
+
+
+def _truncate_for_llm(text: str, max_chars: int) -> tuple[str, bool]:
+    value = str(text or "")
+    if max_chars <= 0 or len(value) <= max_chars:
+        return value, False
+    head = int(max_chars * 0.8)
+    tail = max_chars - head
+    truncated = (
+        value[:head]
+        + "\n\n[内容过长，已截断中间段以提升生成速度]\n\n"
+        + value[-tail:]
+    )
+    return truncated, True
+
+
+def _is_llm_error(text: str) -> bool:
+    if not isinstance(text, str):
+        return True
+    return text.strip().lower().startswith("error:")
+
+
+def _save_phase_json(task_id: str, phase: str, payload: dict) -> str:
+    base_dir = Path(__file__).resolve().parents[2] / "data" / "generated" / task_id
+    base_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    file_path = base_dir / f"{phase}_{ts}.json"
+    file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(file_path)
+
+
+def _normalize_role(value: str) -> str:
+    role = (value or "").strip().lower()
+    if role in {"analysis", "需求分析", "需求分析角色"}:
+        return "analysis"
+    if role in {"generation", "用例编写", "测试用例编写", "测试用例编写角色"}:
+        return "generation"
+    if role in {"review", "用例评审", "测试用例评审", "测试用例评审角色"}:
+        return "review"
+    return role
+
+
+def _role_display_name(role: str) -> str:
+    mapping = {
+        "analysis": "需求分析",
+        "generation": "用例编写",
+        "review": "用例评审",
+    }
+    return mapping.get(role, role)
+
+
+def _derive_requirement_name(text_content: str, fallback: str) -> str:
+    for raw in (text_content or "").splitlines():
+        line = (raw or "").strip()
+        if not line:
+            continue
+        line = line.lstrip("#").strip()
+        if line:
+            return line[:40]
+    value = (fallback or "").strip()
+    if value:
+        return value[:40]
+    return "需求"
+
+
+async def _validate_local_runtime_config(required_roles: Optional[list[str]] = None) -> dict:
+    cfg = await config_center_store.get_config_center()
+
+    enabled_models = [x for x in cfg.get("ai_model_configs", []) if isinstance(x, dict) and x.get("enabled", True)]
+    enabled_prompts = [x for x in cfg.get("prompt_configs", []) if isinstance(x, dict) and x.get("enabled", True)]
+    has_any_enabled_model = bool(enabled_models)
+    enabled_model_names = {str(x.get("model_name") or "").strip() for x in enabled_models if str(x.get("model_name") or "").strip()}
+    role_configs_map = cfg.get("role_configs", {}) or cfg.get("ai_models", {}) or {}
+    enabled_prompt_roles = {
+        _normalize_role(str(x.get("role") or x.get("prompt_type") or ""))
+        for x in enabled_prompts
+        if str(x.get("content") or "").strip()
+    }
+
+    roles = required_roles or []
+    for role in roles:
+        normalized_role = _normalize_role(role)
+        role_name = _role_display_name(normalized_role)
+        if not has_any_enabled_model:
+            raise RuntimeError("本地配置缺失：请在 AI 配置中启用至少一个模型")
+        mapped_model_name = str(role_configs_map.get(normalized_role) or "").strip()
+        if not mapped_model_name:
+            raise RuntimeError(f"本地配置缺失：请在角色配置页面为“{role_name}”选择模型")
+        if mapped_model_name not in enabled_model_names:
+            active = "、".join(sorted(enabled_model_names)) or "无"
+            raise RuntimeError(
+                f"本地配置缺失：角色“{role_name}”映射模型“{mapped_model_name}”未启用（当前已启用：{active}）"
+            )
+        if normalized_role not in enabled_prompt_roles:
+            active = "、".join(sorted([_role_display_name(x) for x in enabled_prompt_roles if x])) or "无"
+            raise RuntimeError(
+                f"本地配置缺失：请在提示词配置中启用“{role_name}”类型提示词（当前已启用：{active}）"
+            )
+
+    enabled_behaviors = [
+        x for x in cfg.get("generation_behavior_configs", []) if isinstance(x, dict) and x.get("enabled", True)
+    ]
+    if enabled_behaviors:
+        return enabled_behaviors[0]
+    # 生成行为配置缺失时走默认值，不阻断任务执行前置校验。
+    return {
+        "enable_ai_review": True,
+        "review_timeout_seconds": 1500,
+        "output_mode": "stream",
+    }
+
+
+async def _read_output_mode() -> str:
+    cfg = await config_center_store.get_config_center()
+    enabled_behaviors = [
+        x for x in cfg.get("generation_behavior_configs", []) if isinstance(x, dict) and x.get("enabled", True)
+    ]
+    if not enabled_behaviors:
+        return "stream"
+    mode = str(enabled_behaviors[0].get("output_mode") or "stream").strip().lower()
+    return "full" if mode == "full" else "stream"
+
+
+async def run_generation_pipeline(
+    task_id: str,
+    source_type: str,
+    doc_url: Optional[str],
+    file_content: Optional[bytes],
+    file_name: Optional[str],
+    file_path: Optional[str] = None,
+    submitter: Optional[str] = None,
+):
+    """
+    The complete AI generation pipeline.
+    Runs as a background task, updating the task_manager at each phase.
+    
+    Nodes:
+      1. analysis      → 需求分析
+      2. generation    → 用例编写
+      3. review        → 用例评审（自动修正用例）
+      4. manual_review → 人工审核（批量采纳后完成）
+    """
+    try:
+        # 设置审计上下文：本任务内所有 LLM 调用记录都会带上这个 task_id
+        set_current_task_id(task_id)
+        behavior_cfg = await _validate_local_runtime_config(["analysis", "generation", "review"])
+        ai_timeout_seconds = int(behavior_cfg.get("review_timeout_seconds") or 1500)
+        analysis_sub_steps_state = {key: "pending" for key, _ in ANALYSIS_SUB_STEP_META}
+        analysis_phase_data: dict = {}
+
+        async def run_ai_step(coro_factory, step_name: str, retries: int | None = None):
+            last_exc: Exception | None = None
+            attempts = retries if isinstance(retries, int) and retries >= 0 else int(settings.LLM_STEP_RETRIES or 0)
+            timeout_seconds = min(int(ai_timeout_seconds or 1500), int(settings.LLM_STEP_TIMEOUT_SECONDS or 240))
+            for attempt in range(attempts + 1):
+                try:
+                    return await asyncio.wait_for(coro_factory(), timeout=timeout_seconds)
+                except asyncio.TimeoutError as exc:
+                    last_exc = RuntimeError(
+                        f"{step_name}超时（>{timeout_seconds}秒），请简化输入或检查模型服务状态"
+                    )
+                    logger.warning(f"Task {task_id} | {step_name} timeout, attempt={attempt + 1}/{attempts + 1}")
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    logger.warning(f"Task {task_id} | {step_name} failed, attempt={attempt + 1}/{attempts + 1}: {exc}")
+                if attempt < attempts:
+                    await asyncio.sleep(0.6)
+            raise last_exc or RuntimeError(f"{step_name}执行失败")
+
+        def _build_analysis_sub_steps():
+            return [
+                {"key": key, "label": label, "status": analysis_sub_steps_state.get(key, "pending")}
+                for key, label in ANALYSIS_SUB_STEP_META
+            ]
+
+        async def _push_analysis_phase(status: str = "running", patch: Optional[dict] = None):
+            if patch:
+                analysis_phase_data.update(patch)
+            analysis_phase_data["sub_steps"] = _build_analysis_sub_steps()
+            await task_manager.update_phase(task_id, "analysis", status, dict(analysis_phase_data))
+
+        async def _set_analysis_sub_step(step_key: str, status: str):
+            if step_key in analysis_sub_steps_state:
+                analysis_sub_steps_state[step_key] = status
+            await _push_analysis_phase("running")
+
+        # ── Step 0: Parse document ──────────────────────────────────────────
+        parse_status_text = "需求描述分析中" if source_type == "manual" else "本地文件分析中"
+        await task_manager.set_task_status(task_id, "running", status_text=parse_status_text)
+        text_content = ""
+        await _set_analysis_sub_step("parse_clean", "running")
+
+        if source_type in ("local", "manual") and file_content is None and file_path:
+            file_content = read_uploaded_bytes(file_path)
+        
+        if source_type in ["feishu", "dingtalk"]:
+            if source_type == "feishu":
+                text_content = await run_ai_step(lambda: read_feishu_doc(doc_url or ""), "飞书文档解析")
+            else:
+                text_content = await run_ai_step(lambda: read_dingtalk_doc(doc_url or ""), "钉钉文档解析")
+        elif source_type == "local" and file_content:
+            text_content = await file_service.parse_text_from_uploaded_file(
+                file_name=file_name or "upload.bin",
+                file_content=file_content,
+            )
+        elif source_type == "manual" and file_content:
+            text_content = file_content.decode("utf-8", errors="ignore")
+
+        # 兼容上传阶段附加输入：context / requirements
+        task_snapshot = await task_manager.get_task(task_id)
+        upload_phase = ((task_snapshot or {}).get("phases") or {}).get("upload") or {}
+        upload_data = upload_phase.get("data") if isinstance(upload_phase, dict) else {}
+        if isinstance(upload_data, dict):
+            context_text = str(upload_data.get("context") or "").strip()
+            requirements_text = str(upload_data.get("requirements") or "").strip()
+            if context_text:
+                text_content += f"\n\n补充上下文：\n{context_text}"
+            if requirements_text:
+                text_content += f"\n\n额外要求：\n{requirements_text}"
+        
+        if not text_content.strip():
+            raise ValueError("无法从文档中提取到文本内容")
+        await _set_analysis_sub_step("parse_clean", "completed")
+        llm_source_text, source_truncated = _truncate_for_llm(
+            text_content,
+            int(settings.LLM_MAX_SOURCE_CHARS or 32000),
+        )
+        if source_type in {"feishu", "dingtalk"}:
+            current_task_name = str((task_snapshot or {}).get("task_name") or "").strip()
+            if current_task_name in {"", file_service.ONLINE_TASK_NAME_PLACEHOLDER}:
+                derived_task_name = _derive_requirement_name(text_content, fallback="在线文档需求")
+                if derived_task_name:
+                    await task_manager.set_task_name(task_id, derived_task_name)
+                    task_snapshot = await task_manager.get_task(task_id)
+
+        # ── Step 0.5: Requirement KB ingest + retrieval ───────────────────
+        await _set_analysis_sub_step("chunking", "running")
+        kb_ingest = await asyncio.to_thread(
+            ingest_requirement_document,
+            task_id=task_id,
+            text=text_content,
+            source_type=source_type,
+            file_name=file_name,
+            submitter=submitter,
+        )
+        await _set_analysis_sub_step("chunking", "completed")
+        await _set_analysis_sub_step("metadata_build", "completed")
+        await _set_analysis_sub_step("embedding_store", "completed")
+
+        await _set_analysis_sub_step("vector_retrieval", "running")
+        similar_history = await asyncio.to_thread(
+            find_similar_requirement_history,
+            query_text=text_content,
+            current_task_id=task_id,
+            top_k=int(getattr(settings, "KB_TOP_K_ANALYSIS", 0) or settings.KB_TOP_K or 5),
+        )
+        kb_retrieval_analysis: dict = {}
+        await _set_analysis_sub_step("vector_retrieval", "completed")
+
+        await _set_analysis_sub_step("rerank_filter", "running")
+        similar_history = rerank_kb_hits(
+            similar_history,
+            text_content,
+            top_k=int(getattr(settings, "KB_TOP_K", 5) or 5),
+        )
+        _, kb_retrieval_analysis = retrieve_kb_context(
+            "analysis",
+            text_content,
+            current_task_id=task_id,
+        )
+        await _set_analysis_sub_step("rerank_filter", "completed")
+
+        await _set_analysis_sub_step("prompt_assembly", "running")
+        history_context, kb_retrieval_gen = retrieve_kb_context(
+            "generation",
+            text_content,
+            current_task_id=task_id,
+        )
+        if not history_context and similar_history:
+            history_context = build_generation_history_context(similar_history)
+        await _set_analysis_sub_step("prompt_assembly", "completed")
+        
+        # ── Phase 1: 需求分析 ─────────────────────────────────────────────
+        await task_manager.set_task_status(task_id, "running", status_text="需求分析中")
+        await _push_analysis_phase("running", {
+            "source_text": text_content,
+            "knowledge_base": {
+                "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                "similar_history_count": len(similar_history),
+                "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+            },
+        })
+        logger.info(f"Task {task_id} | Phase 1: Requirement Analysis")
+        analysis_output_mode = await _read_output_mode()
+        
+        await _set_analysis_sub_step("llm_analysis", "running")
+        analysis = await run_ai_step(lambda: analyze_requirements(llm_source_text), "需求分析")
+        await _set_analysis_sub_step("llm_analysis", "completed")
+        if _is_llm_error(analysis):
+            raise RuntimeError(f"需求分析失败: {analysis}")
+
+        routing = resolve_generation_routing(f"{llm_source_text[:4000]}\n{analysis[:2000]}")
+        generation_mode = "batched" if bool(getattr(settings, "STRUCTURED_STRATEGY_ENABLED", False)) else "legacy"
+        # 实时模式下，需求分析结果先落库，保证页面可立即展示
+        if analysis_output_mode == "stream":
+            await _push_analysis_phase("running", {
+                "source_text": text_content,
+                "analysis": analysis,
+                "output_mode": analysis_output_mode,
+                "knowledge_base": {
+                    "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                    "similar_history_count": len(similar_history),
+                    "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+                    "history_preview": similar_history[:3],
+                },
+            })
+
+        await task_manager.set_task_status(task_id, "running", status_text="测试策略生成中")
+        await _set_analysis_sub_step("strategy_design", "running")
+        strategy_input, strategy_truncated = _truncate_for_llm(
+            analysis,
+            int(settings.LLM_MAX_ANALYSIS_CHARS_FOR_STRATEGY or 12000),
+        )
+        design = await run_ai_step(
+            lambda: design_test_strategy(strategy_input, routing=routing),
+            "测试策略生成",
+        )
+        await _set_analysis_sub_step("strategy_design", "completed")
+        if _is_llm_error(design):
+            raise RuntimeError(f"测试策略生成失败: {design}")
+
+        strategy_v1, design_raw = try_parse_strategy(design)
+        design_structured = strategy_v1.to_dict() if strategy_v1 else None
+        if strategy_v1:
+            generation_mode = "batched"
+        
+        analysis_payload = {
+            "source_text": text_content,
+            "analysis": analysis,
+            "design": design,
+            "design_structured": design_structured,
+            "generation_mode": generation_mode,
+            "routing": routing,
+            "output_mode": analysis_output_mode,
+                "knowledge_base": {
+                    "ingested_chunks": kb_ingest.get("chunk_count", 0),
+                    "similar_history_count": len(similar_history),
+                    "retrieval_mode": "history_enhanced" if similar_history else "cold_start",
+                    "history_preview": similar_history,
+                    "kb_retrieval": kb_retrieval_analysis,
+                },
+                "llm_guardrails": {
+                    "source_truncated": source_truncated,
+                    "strategy_input_truncated": strategy_truncated,
+                    "step_timeout_seconds": min(
+                        int(ai_timeout_seconds or 1500),
+                        int(settings.LLM_STEP_TIMEOUT_SECONDS or 240),
+                    ),
+                    "step_retries": int(settings.LLM_STEP_RETRIES or 0),
+                },
+            }
+        analysis_json_file = _save_phase_json(task_id, "analysis", analysis_payload)
+        analysis_payload["analysis_json_file"] = analysis_json_file
+        analysis_payload["skill_audit"] = skill_audit.list_recent(
+            limit=20, task_id=task_id,
+        )
+        analysis_phase_data.update(analysis_payload)
+        await _push_analysis_phase("completed")
+        
+        # ── Phase 2: 用例编写 ─────────────────────────────────────────────
+        await task_manager.set_task_status(task_id, "running", status_text="用例编写中")
+        generation_output_mode = await _read_output_mode()
+        await task_manager.update_phase(task_id, "generation", "running", {
+            "output_mode": generation_output_mode,
+        })
+        logger.info(f"Task {task_id} | Phase 2: Test Case Generation")
+        gen_result = await run_ai_step(
+            lambda: run_test_case_generation(design, history_context, routing=routing),
+            "测试用例生成",
+        )
+        cases = gen_result.cases
+        # 实时模式下，用例生成结果先落库，保证页面可立即展示
+        if generation_output_mode == "stream":
+            await task_manager.update_phase(task_id, "generation", "running", {
+                "cases": cases,
+                "output_mode": generation_output_mode,
+            })
+        mindmap = convert_cases_to_mindmap(cases)
+        
+        generation_payload = {
+            "cases": cases,
+            "output_mode": generation_output_mode,
+            "generation_mode": gen_result.generation_mode,
+            "design_structured": gen_result.design_structured,
+            "coverage_matrix": gen_result.coverage_matrix,
+            "batch_stats": gen_result.batch_stats,
+            "quality_audit": gen_result.quality_audit,
+            "expected_min_cases": gen_result.expected_min_cases,
+            "kb_retrieval": kb_retrieval_gen,
+            "skill_audit": [
+                r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                if r.get("role") in ("generation", "discover", "quality_gate")
+            ],
+        }
+        generation_json_file = _save_phase_json(task_id, "generation", {"cases": cases})
+        generation_payload["cases_json_file"] = generation_json_file
+        await task_manager.update_phase(task_id, "generation", "completed", generation_payload)
+        await task_manager.set_task_mindmap(task_id, mindmap)
+        
+        # ── Phase 3: 用例评审 ─────────────────────────────────────────────
+        review = {}
+        review_output_mode = await _read_output_mode()
+        review_mode = should_skip_full_review(
+            gen_result.quality_audit or {},
+            gen_result.coverage_matrix,
+        )
+        if behavior_cfg.get("enable_ai_review", True) and review_mode != "skip":
+            await task_manager.set_task_status(task_id, "running", status_text="用例评审中")
+            await task_manager.update_phase(task_id, "review", "running", {
+                "output_mode": review_output_mode,
+                "review_mode": review_mode,
+            })
+            logger.info(f"Task {task_id} | Phase 3: AI Review (mode={review_mode})")
+            review = await run_ai_step(lambda: review_test_cases(cases, analysis), "测试用例评审")
+            reviewed_cases = review.get("reviewed_cases") if isinstance(review, dict) else None
+            original_count = len(cases)
+            if isinstance(reviewed_cases, list) and reviewed_cases:
+                # 防御：若 LLM 截断/失误导致 reviewed_cases 数量明显少于原用例，
+                # 则保留原用例 + 任何新增（按 id 去重合并），绝不让评审阶段"丢用例"。
+                if len(reviewed_cases) < max(original_count - 1, int(original_count * 0.9)):
+                    logger.warning(
+                        f"评审返回 {len(reviewed_cases)} 条 < 原 {original_count} 条，疑似截断；"
+                        f"自动合并去重以保留原用例。"
+                    )
+                    by_id = {int(c.get('id', 0) or 0): c for c in cases}
+                    next_id = max(by_id.keys(), default=0) + 1
+                    for rc in reviewed_cases:
+                        rid = int(rc.get('id', 0) or 0)
+                        if rid <= 0 or rid in by_id:
+                            rid = next_id
+                            next_id += 1
+                            rc['id'] = rid
+                        by_id[rid] = rc
+                    cases = list(by_id.values())
+                else:
+                    cases = reviewed_cases
+                await task_manager.update_phase(
+                    task_id,
+                    "generation",
+                    "completed",
+                    {
+                        "cases": cases,
+                        "output_mode": generation_output_mode,
+                        "cases_json_file": _save_phase_json(task_id, "generation_reviewed", {"cases": cases}),
+                        "skill_audit": [
+                            r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                            if r.get("role") in ("generation", "discover")
+                        ],
+                    },
+                )
+                await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(cases))
+            if review_output_mode == "stream":
+                await task_manager.update_phase(task_id, "review", "running", {
+                    "review": review,
+                    "output_mode": review_output_mode,
+                })
+
+            await task_manager.update_phase(task_id, "review", "completed", {
+                "review": review,
+                "output_mode": review_output_mode,
+                "review_mode": review_mode,
+                "skill_audit": [
+                    r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                    if r.get("role") in ("review", "supplement")
+                ],
+            })
+        elif behavior_cfg.get("enable_ai_review", True) and review_mode == "skip":
+            review = {
+                "summary": f"质量门禁跳过全量评审（overall_score>={getattr(settings, 'REVIEW_SKIP_THRESHOLD', 85)}）",
+                "issues": [],
+                "suggestions": [],
+                "missing_scenarios": [],
+                "quality_score": gen_result.quality_audit.get("overall_score", 0) if gen_result.quality_audit else 0,
+                "review_mode": "skip",
+            }
+            await task_manager.update_phase(task_id, "review", "completed", {
+                "review": review,
+                "output_mode": review_output_mode,
+                "review_mode": "skip",
+            })
+        else:
+            review = {
+                "summary": "已在生成行为配置中关闭 AI 评审",
+                "issues": [],
+                "suggestions": [],
+                "missing_scenarios": [],
+                "quality_score": 0,
+            }
+            await task_manager.update_phase(task_id, "review", "completed", {
+                "review": review,
+                "output_mode": review_output_mode,
+            })
+
+        quality_gate = _evaluate_expected_result_quality(
+            cases=cases,
+            threshold=float(settings.EXPECTED_RESULT_EMPTY_RATIO_THRESHOLD or 0.35),
+        )
+        if gen_result.quality_audit:
+            gen_result.quality_audit["expected_result_blank_ratio"] = quality_gate["blank_ratio"]
+            generation_payload["quality_audit"] = gen_result.quality_audit
+            await task_manager.update_phase(task_id, "generation", "completed", generation_payload)
+        if settings.QUALITY_GATE_ENABLE and not quality_gate["passed"]:
+            fail_msg = (
+                "模型输出质量不足：expected_result 为空比例超阈值，已终止任务。"
+                f" 空白占比={quality_gate['blank_ratio']:.2%}，阈值={quality_gate['threshold']:.2%}"
+            )
+            await task_manager.update_phase(
+                task_id,
+                "generation",
+                "failed",
+                {
+                    "cases": cases,
+                    "output_mode": generation_output_mode,
+                    "cases_json_file": generation_payload.get("cases_json_file"),
+                    "quality_gate": quality_gate,
+                },
+                error=fail_msg,
+            )
+            await task_manager.set_task_status(
+                task_id,
+                QUALITY_BLOCKED_STATUS,
+                error=fail_msg,
+                status_text="模型输出质量不足",
+            )
+            await notify_task_event(
+                task_id=task_id,
+                task_status="模型输出质量不足",
+                status_text="模型输出质量不足：expected_result 缺失过多，任务已终止",
+                error=fail_msg,
+            )
+            return
+
+
+        # ── Phase 3.5: 评审后自动修复 ──────────────────────────────────
+        # 当评审发现问题（issues / suggestions 非空）时，再次调用 generation skill
+        # 对不合格用例进行改写，确保进入人工审核的用例质量达标。
+        review_issues = review.get("issues") or [] if isinstance(review, dict) else []
+        review_suggestions = review.get("suggestions") or [] if isinstance(review, dict) else []
+        review_quality_score = int(review.get("quality_score", 100)) if isinstance(review, dict) else 100
+        should_auto_fix = bool(review_issues or review_suggestions)
+
+        if should_auto_fix:
+            await task_manager.set_task_status(task_id, "running", status_text="评审修复中")
+            await task_manager.update_phase(task_id, "auto_fix", "running", {
+                "quality_score": review_quality_score,
+                "issues_count": len(review_issues),
+                "suggestions_count": len(review_suggestions),
+                "cases_count": len(cases),
+                "status": "根据评审意见修复用例中",
+            })
+            logger.info(
+                "Task {} | Phase 3.5: Auto-fix after review (score={}, issues={}, suggestions={})",
+                task_id, review_quality_score, len(review_issues), len(review_suggestions),
+            )
+            try:
+                _design_for_fix = str(
+                    analysis_phase_data.get("design") or analysis_phase_data.get("analysis") or ""
+                )
+                fixed_cases = await run_ai_step(
+                    lambda: fix_cases_by_review(cases, review, analysis, _design_for_fix),
+                    "评审后用例修复",
+                )
+                if fixed_cases and fixed_cases != cases:
+                    cases = fixed_cases
+                    await task_manager.update_phase(task_id, "generation", "completed", {
+                        "cases": cases,
+                        "output_mode": generation_output_mode,
+                        "cases_json_file": _save_phase_json(task_id, "generation_fixed", {"cases": cases}),
+                        "skill_audit": [
+                            r for r in skill_audit.list_recent(limit=20, task_id=task_id)
+                            if r.get("role") in ("generation", "quality_gate")
+                        ],
+                    })
+                    await task_manager.set_task_mindmap(task_id, convert_cases_to_mindmap(cases))
+
+                await task_manager.update_phase(task_id, "auto_fix", "completed", {
+                    "quality_score": review_quality_score,
+                    "issues_count": len(review_issues),
+                    "suggestions_count": len(review_suggestions),
+                    "fixed_cases_count": len(cases),
+                    "status": "修复完成",
+                    "skill_audit": [
+                        r for r in skill_audit.list_recent(limit=10, task_id=task_id)
+                        if r.get("role") in ("generation",)
+                    ],
+                })
+                logger.success("Task {} | Phase 3.5: auto_fix completed, cases={}", task_id, len(cases))
+            except Exception as fix_err:
+                logger.warning("Task {} | auto_fix 失败，跳过继续: {}", task_id, fix_err)
+                await task_manager.update_phase(task_id, "auto_fix", "completed", {
+                    "skipped": True,
+                    "reason": str(fix_err),
+                    "fixed_cases_count": len(cases),
+                    "status": "修复跳过（继续人工审核）",
+                })
+        else:
+            # 无问题时直接标记 auto_fix 阶段为已完成（无需修复）
+            await task_manager.update_phase(task_id, "auto_fix", "completed", {
+                "quality_score": review_quality_score,
+                "issues_count": 0,
+                "suggestions_count": 0,
+                "fixed_cases_count": len(cases),
+                "status": "评审无问题，无需修复",
+            })
+
+
+        # 飞书源任务：在需求文档下创建“需求名+测试用例”子文档并写入思维导图内容
+        try:
+            feishu_mindmap_url = ""
+            if source_type == "feishu" and str(doc_url or "").strip():
+                requirement_name = _derive_requirement_name(
+                    text_content=text_content,
+                    fallback=(task_snapshot or {}).get("task_name") or "",
+                )
+                feishu_mindmap_url = await write_feishu_doc(
+                    doc_url=doc_url or "",
+                    cases=cases,
+                    title=f"{requirement_name}测试用例",
+                )
+            if feishu_mindmap_url:
+                await task_manager.set_task_feishu_mindmap_url(task_id, feishu_mindmap_url)
+                await task_manager.update_phase(
+                    task_id,
+                    "generation",
+                    "completed",
+                    {
+                        "cases": cases,
+                        "output_mode": generation_output_mode,
+                        "cases_json_file": generation_payload.get("cases_json_file"),
+                        "feishu_mindmap_url": feishu_mindmap_url,
+                    },
+                )
+        except Exception as write_error:  # noqa: BLE001
+            logger.warning("Task {} write cases back to Feishu doc skipped: {}", task_id, write_error)
+            await task_manager.update_phase(
+                task_id,
+                "generation",
+                "completed",
+                {
+                    "cases": cases,
+                    "output_mode": generation_output_mode,
+                    "cases_json_file": generation_payload.get("cases_json_file"),
+                    "feishu_mindmap_error": str(write_error),
+                },
+            )
+        
+        # ── Phase 4: 人工审核 ────────────────────────────────────────────
+        await task_manager.update_phase(
+            task_id,
+            "manual_review",
+            "running",
+            {
+                "review_summary": str(review.get("summary") or "") if isinstance(review, dict) else "",
+                "pending_adoption_count": len(cases),
+                "status": "人工审核中",
+            },
+        )
+        await task_manager.set_task_status(task_id, "manual_reviewing", status_text="人工审核中")
+        await notify_task_event(
+            task_id=task_id,
+            task_status="人工审核中",
+            status_text="测试用例评审已完成，请人工批量采纳后完成任务",
+        )
+        logger.success(f"Task {task_id} entered manual review stage.")
+        
+    except Exception as e:
+        logger.error(f"Task {task_id} failed: {e}")
+        task = await task_manager.get_task(task_id)
+        failed_phase = None
+        if task:
+            for phase_key, phase in task["phases"].items():
+                if phase["status"] == "running":
+                    failed_phase = phase_key
+                    await task_manager.update_phase(task_id, phase_key, "failed")
+                    break
+
+        fail_status = "failed"
+        status_text = "执行异常"
+        if failed_phase == "analysis":
+            fail_status = "analysis_failed"
+            status_text = "需求分析异常"
+        elif failed_phase == "generation":
+            fail_status = "generation_failed"
+            status_text = "用例编写异常"
+        elif failed_phase == "review":
+            fail_status = "review_failed"
+            status_text = "用例评审异常"
+        elif failed_phase == "manual_review":
+            status_text = "人工审核异常"
+
+        await task_manager.set_task_status(task_id, fail_status, error=str(e), status_text=status_text)
+        await notify_task_event(
+            task_id=task_id,
+            task_status=status_text if fail_status != "failed" else "执行异常",
+            status_text=status_text,
+            error=str(e),
+        )

@@ -1,0 +1,73 @@
+# ========== Node.js / Vue Frontend ==========
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.npm/
+frontend/Coverage/
+frontend/.DS_Store
+frontend/.env.local
+frontend/.env.*.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# ========== Python / FastAPI Backend ==========
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+backend/venv/
+backend/env/
+backend/.venv/
+backend/ENV/
+backend/env.bak/
+backend/venv.bak/
+backend/data/
+backend/data/app.db
+# Logs
+logs/
+*.log
+
+# Git worktrees (isolated feature branches)
+.worktrees/
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Environment variables
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.db
+.run/
+
+# Vector database
+chroma_db/
+
+# Temporary output files
+output.png
+.gstack/
